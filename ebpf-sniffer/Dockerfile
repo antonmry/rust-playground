@@ -27,6 +27,11 @@ RUN dnf -y upgrade \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --default-toolchain stable \
     && rustup toolchain install ${RUST_NIGHTLY} --component rust-src \
+    && TOOLCHAIN_DIR="/usr/local/rustup/toolchains/${RUST_NIGHTLY}-x86_64-unknown-linux-gnu" \
+    && perl -0pi -e 's/pub mod big;/#[cfg(not(target_arch = "bpf"))]\npub mod big;/' \
+        "$TOOLCHAIN_DIR/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/int/mod.rs" \
+    && perl -0pi -e 's/pub use big::{i256, u256};/#[cfg(not(target_arch = "bpf"))]\npub use big::{i256, u256};/' \
+        "$TOOLCHAIN_DIR/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/int/mod.rs" \
     && cargo install --locked bpf-linker
 
 WORKDIR /workspace

@@ -113,6 +113,12 @@ source $HOME/.cargo/env
 
 # Install nightly toolchain (pin to known working build)
 rustup toolchain install nightly-2024-02-15 --component rust-src
+# Patch compiler-builtins to disable big-int intrinsics (not supported by BPF LLVM backend)
+TOOLCHAIN_DIR="$HOME/.rustup/toolchains/nightly-2024-02-15-x86_64-unknown-linux-gnu"
+perl -0pi -e 's/pub mod big;/#[cfg(not(target_arch = "bpf"))]\npub mod big;/' \
+    "$TOOLCHAIN_DIR/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/int/mod.rs"
+perl -0pi -e 's/pub use big::{i256, u256};/#[cfg(not(target_arch = "bpf"))]\npub use big::{i256, u256};/' \
+    "$TOOLCHAIN_DIR/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/int/mod.rs"
 
 # Install bpf-linker (required for eBPF compilation)
 cargo install bpf-linker
@@ -146,7 +152,9 @@ chmod +x run.sh
 ```
 
 **Note:** Pinning to `nightly-2024-02-15` avoids recent regressions in the BPF backend. Use `-Z build-std=core` with the
-listed build-std features so `core`/`compiler_builtins` are rebuilt from source for the `bpfel-unknown-none` target.
+listed build-std features so `core`/`compiler_builtins` are rebuilt from source for the `bpfel-unknown-none` target. The
+patched `compiler-builtins` disables the `big` integer module when targeting BPF, which otherwise triggers LLVM errors
+(`aggregate returns are not supported`).
 
 ### 4. Verify Build
 
