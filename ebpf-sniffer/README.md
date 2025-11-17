@@ -112,10 +112,10 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 
 # Install nightly toolchain (pin to known working build)
-rustup toolchain install nightly-2025-02-01 --component rust-src
+rustup toolchain install nightly-2025-03-20 --component rust-src
 export CARGO_UNSTABLE_EDITION2024=1
 # Patch compiler-builtins to disable big-int intrinsics (not supported by BPF LLVM backend)
-TOOLCHAIN_DIR="$HOME/.rustup/toolchains/nightly-2025-02-01-x86_64-unknown-linux-gnu"
+TOOLCHAIN_DIR="$HOME/.rustup/toolchains/nightly-2025-03-20-x86_64-unknown-linux-gnu"
 perl -0pi -e 's/pub mod big;/#[cfg(not(target_arch = "bpf"))]\npub mod big;/' \
     "$TOOLCHAIN_DIR/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/int/mod.rs"
 perl -0pi -e 's/pub use big::{i256, u256};/#[cfg(not(target_arch = "bpf"))]\npub use big::{i256, u256};/' \
@@ -133,7 +133,7 @@ cd ebpf-sniffer
 
 # Build the eBPF kernel program first
 cd ebpf-sniffer-ebpf
-cargo +nightly-2025-02-01 build --release \
+cargo +nightly-2025-03-20 build --release \
     -Z build-std=core \
     -Z build-std-features=compiler-builtins-mem,compiler-builtins-no-f16-f128 \
     --target bpfel-unknown-none
@@ -152,7 +152,7 @@ chmod +x run.sh
 ./run.sh
 ```
 
-**Note:** Pinning to `nightly-2025-02-01` avoids recent regressions in the BPF backend while providing Cargo support for
+**Note:** Pinning to `nightly-2025-03-20` avoids recent regressions in the BPF backend while providing Cargo support for
 `edition2024`. Use `-Z build-std=core` with the
 listed build-std features so `core`/`compiler_builtins` are rebuilt from source for the `bpfel-unknown-none` target. The
 patched `compiler-builtins` disables the `big` integer module when targeting BPF, which otherwise triggers LLVM errors
