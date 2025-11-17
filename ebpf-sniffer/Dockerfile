@@ -46,6 +46,7 @@ COPY . .
 RUN cargo +nightly build --release --locked \
     --manifest-path ebpf-sniffer-ebpf/Cargo.toml \
     -Z build-std=core \
+    -Z build-std-features=compiler-builtins-mem \
     --target ebpf-sniffer-ebpf/bpfel-unknown-none.json
 
 RUN cargo build --release --locked --manifest-path ebpf-sniffer/Cargo.toml
