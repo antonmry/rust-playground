@@ -2,6 +2,9 @@
 
 FROM fedora:40 AS builder
 
+ARG RUST_NIGHTLY=nightly-2024-02-15
+ENV RUST_NIGHTLY=${RUST_NIGHTLY}
+
 ENV CARGO_HOME=/usr/local/cargo \
     RUSTUP_HOME=/usr/local/rustup \
     PATH=/usr/local/cargo/bin:$PATH
@@ -23,8 +26,7 @@ RUN dnf -y upgrade \
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --default-toolchain stable \
-    && rustup toolchain install nightly \
-    && rustup target add bpfel-unknown-none --toolchain nightly \
+    && rustup toolchain install ${RUST_NIGHTLY} --component rust-src \
     && cargo install --locked bpf-linker
 
 WORKDIR /workspace
@@ -43,11 +45,13 @@ RUN cargo generate-lockfile \
 
 COPY . .
 
-RUN cargo +nightly build --release --locked \
+RUN cargo +${RUST_NIGHTLY} build --release --locked \
     --manifest-path ebpf-sniffer-ebpf/Cargo.toml \
+    -Z build-std=core \
+    -Z build-std-features=compiler-builtins-mem,compiler-builtins-no-f16-f128 \
     --target bpfel-unknown-none
 
-RUN cargo build --release --locked --manifest-path ebpf-sniffer/Cargo.toml
+RUN cargo +${RUST_NIGHTLY} build --release --locked --manifest-path ebpf-sniffer/Cargo.toml
 
 FROM fedora:40 AS runtime
 
