@@ -255,11 +255,13 @@ If you have access to:
 ### Build Container Image (x86_64 Linux Only)
 
 ```bash
-# Only works on native x86_64 Linux
-docker build -t ebpf-sniffer .
+# Run from the ebpf-sniffer workspace root
+podman build -t ebpf-sniffer -f Dockerfile .
 ```
 
-**Note:** The Dockerfile is provided for x86_64 Linux users. It will NOT work on Apple Silicon.
+This Dockerfile uses Fedora, installs the required LLVM/Clang + Rust nightly toolchains, and
+builds both the eBPF object and userspace binary. Building directly on Apple Silicon is still
+unsupported—use an x86_64 VM, Podman machine, or remote builder if you're on macOS ARM.
 
 ### Run in Container
 
@@ -275,7 +277,7 @@ podman run --rm --privileged \
     --cap-add BPF \
     -v /sys/kernel/debug:/sys/kernel/debug:ro \
     ebpf-sniffer \
-    ebpf-sniffer --iface eth0 --domains api.github.com --verbose
+    --iface eth0 --domains api.github.com --verbose
 ```
 
 **Why these flags?**
