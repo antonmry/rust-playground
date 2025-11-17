@@ -7,7 +7,8 @@ ENV RUST_NIGHTLY=${RUST_NIGHTLY}
 
 ENV CARGO_HOME=/usr/local/cargo \
     RUSTUP_HOME=/usr/local/rustup \
-    PATH=/usr/local/cargo/bin:$PATH
+    PATH=/usr/local/cargo/bin:$PATH \
+    CARGO_UNSTABLE_EDITION2024=1
 
 RUN dnf -y upgrade \
     && dnf -y install --setopt=install_weak_deps=False --setopt=tsflags=nodocs \

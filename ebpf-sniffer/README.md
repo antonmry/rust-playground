@@ -113,6 +113,7 @@ source $HOME/.cargo/env
 
 # Install nightly toolchain (pin to known working build)
 rustup toolchain install nightly-2024-02-15 --component rust-src
+export CARGO_UNSTABLE_EDITION2024=1
 # Patch compiler-builtins to disable big-int intrinsics (not supported by BPF LLVM backend)
 TOOLCHAIN_DIR="$HOME/.rustup/toolchains/nightly-2024-02-15-x86_64-unknown-linux-gnu"
 perl -0pi -e 's/pub mod big;/#[cfg(not(target_arch = "bpf"))]\npub mod big;/' \
