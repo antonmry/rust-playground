@@ -126,7 +126,10 @@ cd ebpf-sniffer
 
 # Build the eBPF kernel program first
 cd ebpf-sniffer-ebpf
-cargo +nightly build --release -Z build-std=core -Z build-std-features=compiler-builtins-mem --target ./bpfel-unknown-none.json
+cargo +nightly build --release \
+    -Z build-std=core \
+    -Z build-std-features=compiler-builtins-mem,compiler-builtins-no-f16-f128 \
+    --target ./bpfel-unknown-none.json
 cd ..
 
 # Build the userspace program
@@ -142,8 +145,8 @@ chmod +x run.sh
 ./run.sh
 ```
 
-**Note:** The eBPF build uses `-Z build-std=core` (and `-Z build-std-features=compiler-builtins-mem` to avoid unsupported floating-point intrinsics)
-to build the core library from source, which is required for custom targets.
+**Note:** The eBPF build uses `-Z build-std=core` and `-Z build-std-features=compiler-builtins-mem,compiler-builtins-no-f16-f128`
+to build `core` from source without pulling in unsupported floating-point intrinsics (f16/f128) on BPF targets.
 
 ### 4. Verify Build
 
