@@ -111,8 +111,9 @@ sudo pacman -S clang llvm libelf linux-headers
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 
-# Install nightly toolchain with rust-src for eBPF compilation
-rustup toolchain install nightly --component rust-src
+# Install nightly toolchain and BPF target
+rustup toolchain install nightly
+rustup target add bpfel-unknown-none --toolchain nightly
 
 # Install bpf-linker (required for eBPF compilation)
 cargo install bpf-linker
@@ -126,10 +127,7 @@ cd ebpf-sniffer
 
 # Build the eBPF kernel program first
 cd ebpf-sniffer-ebpf
-cargo +nightly build --release \
-    -Z build-std=core \
-    -Z build-std-features=compiler-builtins-mem,compiler-builtins-no-f16-f128 \
-    --target ./bpfel-unknown-none.json
+cargo +nightly build --release --target bpfel-unknown-none
 cd ..
 
 # Build the userspace program
@@ -145,8 +143,8 @@ chmod +x run.sh
 ./run.sh
 ```
 
-**Note:** The eBPF build uses `-Z build-std=core` and `-Z build-std-features=compiler-builtins-mem,compiler-builtins-no-f16-f128`
-to build `core` from source without pulling in unsupported floating-point intrinsics (f16/f128) on BPF targets.
+**Note:** Use the built-in `bpfel-unknown-none` target (`rustup target add bpfel-unknown-none --toolchain nightly`) so you
+can build the eBPF program without maintaining a custom target JSON.
 
 ### 4. Verify Build
 

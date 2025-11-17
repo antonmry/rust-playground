@@ -23,7 +23,8 @@ RUN dnf -y upgrade \
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --default-toolchain stable \
-    && rustup toolchain install nightly --component rust-src \
+    && rustup toolchain install nightly \
+    && rustup target add bpfel-unknown-none --toolchain nightly \
     && cargo install --locked bpf-linker
 
 WORKDIR /workspace
@@ -35,7 +36,6 @@ COPY ebpf-sniffer/build.rs ebpf-sniffer/build.rs
 COPY ebpf-sniffer/src ebpf-sniffer/src
 COPY ebpf-sniffer-ebpf/Cargo.toml ebpf-sniffer-ebpf/Cargo.toml
 COPY ebpf-sniffer-ebpf/src ebpf-sniffer-ebpf/src
-COPY ebpf-sniffer-ebpf/bpfel-unknown-none.json ebpf-sniffer-ebpf/bpfel-unknown-none.json
 
 RUN cargo generate-lockfile \
     && cargo update -p aya-log-common --precise 0.1.15 \
@@ -45,9 +45,7 @@ COPY . .
 
 RUN cargo +nightly build --release --locked \
     --manifest-path ebpf-sniffer-ebpf/Cargo.toml \
-    -Z build-std=core \
-    -Z build-std-features=compiler-builtins-mem,compiler-builtins-no-f16-f128 \
-    --target ebpf-sniffer-ebpf/bpfel-unknown-none.json
+    --target bpfel-unknown-none
 
 RUN cargo build --release --locked --manifest-path ebpf-sniffer/Cargo.toml
 
