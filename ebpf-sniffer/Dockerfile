@@ -37,16 +37,18 @@ COPY ebpf-sniffer-ebpf/Cargo.toml ebpf-sniffer-ebpf/Cargo.toml
 COPY ebpf-sniffer-ebpf/src ebpf-sniffer-ebpf/src
 COPY ebpf-sniffer-ebpf/bpfel-unknown-none.json ebpf-sniffer-ebpf/bpfel-unknown-none.json
 
-RUN cargo fetch
+RUN cargo generate-lockfile \
+    && cargo update -p aya-log-common --precise 0.1.15 \
+    && cargo fetch --locked
 
 COPY . .
 
-RUN cargo +nightly build --release \
+RUN cargo +nightly build --release --locked \
     --manifest-path ebpf-sniffer-ebpf/Cargo.toml \
     -Z build-std=core \
     --target ebpf-sniffer-ebpf/bpfel-unknown-none.json
 
-RUN cargo build --release --manifest-path ebpf-sniffer/Cargo.toml
+RUN cargo build --release --locked --manifest-path ebpf-sniffer/Cargo.toml
 
 FROM fedora:40 AS runtime
 
