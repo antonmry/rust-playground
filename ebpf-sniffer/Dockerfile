@@ -31,7 +31,11 @@ WORKDIR /workspace
 COPY Cargo.toml Cargo.toml
 COPY .cargo .cargo
 COPY ebpf-sniffer/Cargo.toml ebpf-sniffer/Cargo.toml
+COPY ebpf-sniffer/build.rs ebpf-sniffer/build.rs
+COPY ebpf-sniffer/src ebpf-sniffer/src
 COPY ebpf-sniffer-ebpf/Cargo.toml ebpf-sniffer-ebpf/Cargo.toml
+COPY ebpf-sniffer-ebpf/src ebpf-sniffer-ebpf/src
+COPY ebpf-sniffer-ebpf/bpfel-unknown-none.json ebpf-sniffer-ebpf/bpfel-unknown-none.json
 
 RUN cargo fetch
 
