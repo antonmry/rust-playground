@@ -7,7 +7,6 @@ use aya_ebpf::{
     maps::{HashMap, PerfEventArray},
     programs::TcContext,
 };
-use aya_log_ebpf::info;
 use core::mem;
 use network_types::{
     eth::{EthHdr, EtherType},
@@ -43,7 +42,7 @@ static TARGET_IPS: HashMap<u32, u8> = HashMap::with_max_entries(1024, 0);
 
 /// PerfEventArray for sending captured packets to userspace
 #[map]
-static PACKET_EVENTS: PerfEventArray<PacketData> = PerfEventArray::with_max_entries(1024, 0);
+static PACKET_EVENTS: PerfEventArray<PacketData> = PerfEventArray::new(0);
 
 /// TC egress classifier that captures HTTPS traffic to target domains
 #[classifier]
@@ -77,7 +76,7 @@ fn try_ebpf_sniffer(ctx: TcContext) -> Result<i32, ()> {
     let dst_ip = unsafe { u32::from_be((*ipv4_hdr).dst_addr) };
 
     // Check if destination IP is in our target list
-    if TARGET_IPS.get(&dst_ip).is_none() {
+    if unsafe { TARGET_IPS.get(&dst_ip) }.is_none() {
         return Ok(TC_ACT_OK); // Not a target IP, pass through
     }
 
