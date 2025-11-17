@@ -2,7 +2,7 @@
 
 FROM fedora:40 AS builder
 
-ARG RUST_NIGHTLY=nightly-2024-12-01
+ARG RUST_NIGHTLY=nightly-2025-02-01
 ENV RUST_NIGHTLY=${RUST_NIGHTLY}
 
 ENV CARGO_HOME=/usr/local/cargo \
