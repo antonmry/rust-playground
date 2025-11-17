@@ -1,0 +1,32 @@
+# Rust build artifacts
+/target
+Cargo.lock
+
+# eBPF compiled binaries
+*.o
+*.elf
+
+# Output files
+*.csv
+*.pcap
+*.log
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Debug files
+*.dSYM/
+*.pdb
+
+# Environment files
+.env
+.env.local
+
+# Test artifacts
+test_output/
+captures/

@@ -1,0 +1,20 @@
+{
+  "llvm-target": "bpfel",
+  "data-layout": "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
+  "target-endian": "little",
+  "target-pointer-width": "64",
+  "target-c-int-width": "32",
+  "os": "none",
+  "arch": "bpf",
+  "linker-flavor": "bpf-linker",
+  "linker": "bpf-linker",
+  "executables": true,
+  "panic-strategy": "abort",
+  "position-independent-executables": true,
+  "dynamic-linking": false,
+  "exe-suffix": "",
+  "cpu": "generic",
+  "features": "+alu32",
+  "max-atomic-width": 64,
+  "emit-debug-gdb-scripts": false
+}

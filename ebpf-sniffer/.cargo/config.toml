@@ -1,0 +1,8 @@
+[build]
+target-dir = "target"
+
+[target.bpfel-unknown-none]
+runner = "echo 'This is an eBPF program and cannot be run directly'"
+
+[target.bpfeb-unknown-none]
+runner = "echo 'This is an eBPF program and cannot be run directly'"
