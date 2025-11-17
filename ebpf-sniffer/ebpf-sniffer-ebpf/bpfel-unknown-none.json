@@ -6,7 +6,7 @@
   "target-c-int-width": 32,
   "os": "none",
   "arch": "bpf",
-  "linker-flavor": "bpf-linker",
+  "linker-flavor": "bpf",
   "linker": "bpf-linker",
   "executables": true,
   "panic-strategy": "abort",
