@@ -135,6 +135,7 @@ cd ebpf-sniffer
 cd ebpf-sniffer-ebpf
 # Pin Aya crates to the versions this workspace targets
 cargo update -p aya --precise 0.12.0 \
+    -p aya@0.13.1 --precise 0.12.0 \
     -p aya-log --precise 0.2.1 \
     -p aya-obj --precise 0.1.0 \
     -p aya-log-common --precise 0.1.15
