@@ -133,6 +133,11 @@ cd ebpf-sniffer
 
 # Build the eBPF kernel program first
 cd ebpf-sniffer-ebpf
+# Pin Aya crates to the versions this workspace targets
+cargo update -p aya --precise 0.12.0 \
+    -p aya-log --precise 0.2.1 \
+    -p aya-obj --precise 0.1.0 \
+    -p aya-log-common --precise 0.1.15
 cargo +nightly-2025-03-20 build --release \
     -Z build-std=core \
     -Z build-std-features=compiler-builtins-mem,compiler-builtins-no-f16-f128 \

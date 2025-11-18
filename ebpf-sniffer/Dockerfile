@@ -46,6 +46,9 @@ COPY ebpf-sniffer-ebpf/Cargo.toml ebpf-sniffer-ebpf/Cargo.toml
 COPY ebpf-sniffer-ebpf/src ebpf-sniffer-ebpf/src
 
 RUN cargo generate-lockfile \
+    && cargo update -p aya --precise 0.12.0 \
+    && cargo update -p aya-log --precise 0.2.1 \
+    && cargo update -p aya-obj --precise 0.1.0 \
     && cargo update -p aya-log-common --precise 0.1.15 \
     && cargo fetch --locked
 
