@@ -4,10 +4,10 @@
 use aya_ebpf::{
     bindings::TC_ACT_OK,
     macros::{classifier, map},
-    maps::{HashMap, PerfEventArray},
+    maps::{HashMap, PerfEventArray, PerCpuArray},
     programs::TcContext,
 };
-use core::mem;
+use core::{mem, ptr};
 use network_types::{
     eth::{EthHdr, EtherType},
     ip::{Ipv4Hdr, IpProto},
@@ -43,6 +43,9 @@ static TARGET_IPS: HashMap<u32, u8> = HashMap::with_max_entries(1024, 0);
 /// PerfEventArray for sending captured packets to userspace
 #[map]
 static PACKET_EVENTS: PerfEventArray<PacketData> = PerfEventArray::new(0);
+
+#[map]
+static mut PACKET_BUFFER: PerCpuArray<PacketData> = PerCpuArray::with_max_entries(1, 0);
 
 /// TC egress classifier that captures HTTPS traffic to target domains
 #[classifier]
@@ -117,17 +120,19 @@ fn try_ebpf_sniffer(ctx: TcContext) -> Result<i32, ()> {
     }
 
     // Prepare packet data structure
-    let mut packet = PacketData {
-        info: PacketInfo {
-            src_ip,
-            dst_ip,
-            src_port,
-            dst_port,
-            data_len: payload_len as u32,
-            timestamp: unsafe { aya_ebpf::helpers::bpf_ktime_get_ns() },
-        },
-        data: [0u8; MAX_PAYLOAD_SIZE],
+    let packet_ptr = unsafe { PACKET_BUFFER.get_ptr_mut(0).ok_or(())? };
+    let packet = unsafe { &mut *packet_ptr };
+    packet.info = PacketInfo {
+        src_ip,
+        dst_ip,
+        src_port,
+        dst_port,
+        data_len: payload_len as u32,
+        timestamp: unsafe { aya_ebpf::helpers::bpf_ktime_get_ns() },
     };
+    unsafe {
+        ptr::write_bytes(packet.data.as_mut_ptr(), 0, MAX_PAYLOAD_SIZE);
+    }
 
     // Copy payload data (bounded by MAX_PAYLOAD_SIZE)
     let copy_len = if payload_len > MAX_PAYLOAD_SIZE {
@@ -152,7 +157,7 @@ fn try_ebpf_sniffer(ctx: TcContext) -> Result<i32, ()> {
     }
 
     // Send packet data to userspace
-    PACKET_EVENTS.output(&ctx, &packet, 0);
+    PACKET_EVENTS.output(&ctx, packet, 0);
 
     Ok(TC_ACT_OK) // Always allow packet through
 }
