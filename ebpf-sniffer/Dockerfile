@@ -1,78 +1,27 @@
-# syntax=docker/dockerfile:1.6
+FROM mcr.microsoft.com/devcontainers/rust:1-bookworm
 
-FROM fedora:40 AS builder
+# Install llvm
+RUN apt-get update \
+  && apt install -y lsb-release wget software-properties-common gnupg \
+  && wget https://apt.llvm.org/llvm.sh \
+  && chmod a+x llvm.sh \
+  && ./llvm.sh 19 all \
+  && apt install -y libclang-19-dev libpolly-19-dev libzstd-dev bpftool \
+  && apt autoremove -y
 
-ARG RUST_NIGHTLY=nightly-2025-03-20
-ENV RUST_NIGHTLY=${RUST_NIGHTLY}
+# Install Rust with nightly sources
+ENV RUST_VERSION=stable
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain=$RUST_VERSION
+RUN rustup toolchain install nightly --component rust-src
+RUN export LLVM_SYS_191_PREFIX=/usr/include/llvm-19
+ENV PATH "$PATH:/usr/local/cargo/bin"
 
-ENV CARGO_HOME=/usr/local/cargo \
-    RUSTUP_HOME=/usr/local/rustup \
-    PATH=/usr/local/cargo/bin:$PATH \
-    CARGO_UNSTABLE_EDITION2024=1
+# BPF and aya tools
+RUN cargo install --no-default-features --features llvm-19 bpf-linker
+RUN cargo install bindgen-cli cargo-generate
+RUN cargo install --git https://github.com/aya-rs/aya -- aya-tool
 
-RUN dnf -y upgrade \
-    && dnf -y install --setopt=install_weak_deps=False --setopt=tsflags=nodocs \
-        clang \
-        llvm \
-        llvm-devel \
-        elfutils-libelf-devel \
-        pkgconf-pkg-config \
-        git \
-        curl \
-        make \
-        which \
-        findutils \
-        perl \
-    && dnf clean all
+# Codex
+RUN apt-get install -y --no-install-recommends nodejs npm
+RUN npm install -g @openai/codex
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --default-toolchain stable \
-    && rustup toolchain install ${RUST_NIGHTLY} --component rust-src \
-    && TOOLCHAIN_DIR="/usr/local/rustup/toolchains/${RUST_NIGHTLY}-x86_64-unknown-linux-gnu" \
-    && perl -0pi -e 's/pub mod big;/#[cfg(not(target_arch = "bpf"))]\npub mod big;/' \
-        "$TOOLCHAIN_DIR/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/int/mod.rs" \
-    && perl -0pi -e 's/pub use big::{i256, u256};/#[cfg(not(target_arch = "bpf"))]\npub use big::{i256, u256};/' \
-        "$TOOLCHAIN_DIR/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/int/mod.rs" \
-    && cargo install --locked bpf-linker
-
-WORKDIR /workspace
-
-COPY Cargo.toml Cargo.toml
-COPY .cargo .cargo
-COPY ebpf-sniffer/Cargo.toml ebpf-sniffer/Cargo.toml
-COPY ebpf-sniffer/build.rs ebpf-sniffer/build.rs
-COPY ebpf-sniffer/src ebpf-sniffer/src
-COPY ebpf-sniffer-ebpf/Cargo.toml ebpf-sniffer-ebpf/Cargo.toml
-COPY ebpf-sniffer-ebpf/src ebpf-sniffer-ebpf/src
-
-RUN cargo generate-lockfile \
-    && cargo update -p aya@0.12.0 --precise 0.12.0 \
-    && cargo update -p aya@0.13.1 --precise 0.12.0 \
-    && cargo update -p aya-log --precise 0.2.1 \
-    && cargo update -p aya-obj --precise 0.1.0 \
-    && cargo update -p aya-log-common --precise 0.1.15 \
-    && cargo fetch --locked
-
-COPY . .
-
-RUN cargo +${RUST_NIGHTLY} build --release --locked \
-    --manifest-path ebpf-sniffer-ebpf/Cargo.toml \
-    -Z build-std=core \
-    -Z build-std-features=compiler-builtins-mem,compiler-builtins-no-f16-f128 \
-    --target bpfel-unknown-none
-
-RUN cargo +${RUST_NIGHTLY} build --release --locked --manifest-path ebpf-sniffer/Cargo.toml
-
-FROM fedora:40 AS runtime
-
-RUN dnf -y upgrade \
-    && dnf -y install --setopt=install_weak_deps=False --setopt=tsflags=nodocs \
-        iproute \
-        iproute-tc \
-        iputils \
-    && dnf clean all
-
-COPY --from=builder /workspace/target/release/ebpf-sniffer /usr/local/bin/ebpf-sniffer
-
-ENTRYPOINT ["/usr/local/bin/ebpf-sniffer"]
-CMD ["--help"]
