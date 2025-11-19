@@ -1,0 +1,64 @@
+images:
+  - location: https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img
+    arch: "x86_64"
+  - location: https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img
+    arch: "aarch64"
+mounts:
+  - location: "~"
+  - location: "/Users/antonmry/Workspace/Galiglobal/rust-playground/ebpf-aya"
+    writable: true
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euxo pipefail
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y \
+        build-essential \
+        pkg-config \
+        libssl-dev \
+        clang \
+        llvm \
+        libclang-dev \
+        libelf-dev \
+        zlib1g-dev \
+        linux-headers-generic \
+        expect \
+        git \
+        curl
+  - mode: user
+    script: |
+      #!/bin/bash
+      set -euxo pipefail
+      if ! command -v rustup >/dev/null 2>&1; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain nightly
+      fi
+      if ! grep -q 'CARGO_TERM_COLOR' "$HOME/.bashrc"; then
+        {
+          echo 'export CARGO_TERM_COLOR=always'
+          echo 'export RUSTUP_HOME="$HOME/.rustup"'
+          echo 'export CARGO_HOME="$HOME/.cargo"'
+          echo 'source "$HOME/.cargo/env"'
+        } >> "$HOME/.bashrc"
+      fi
+      source "$HOME/.cargo/env"
+
+      rustup toolchain install nightly --component clippy rust-src rustfmt
+      rustup toolchain install stable
+      rustup default nightly
+
+      if ! command -v cargo-generate >/dev/null 2>&1; then
+        cargo install cargo-generate
+      fi
+
+      if ! command -v bpf-linker >/dev/null 2>&1; then
+        cargo install bpf-linker --git https://github.com/aya-rs/bpf-linker.git --features llvm-21 --no-default-features
+      fi
+ssh:
+  localPort: 60022
+  loadDotSSHPubKeys: true
+message: |
+  Lima VM configured for Aya CI parity.
+  Start it with: limactl start --name aya-ci lima-aya.yaml
+  Once running, enter the VM via: limactl shell aya-ci
