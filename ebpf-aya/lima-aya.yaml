@@ -1,11 +1,12 @@
 images:
-  - location: https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img
+  - location: https://cloud-images.ubuntu.com/releases/25.10/release/ubuntu-25.10-server-cloudimg-amd64.img
     arch: "x86_64"
-  - location: https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img
+  - location: https://cloud-images.ubuntu.com/releases/25.10/release/ubuntu-25.10-server-cloudimg-arm64.img
     arch: "aarch64"
 mounts:
   - location: "~"
-  - location: "/Users/antonmry/Workspace/Galiglobal/rust-playground/ebpf-aya"
+    writable: true
+  - location: "~/Workspace/Galiglobal/rust-playground/ebpf-aya"
     writable: true
 provision:
   - mode: system
@@ -15,18 +16,23 @@ provision:
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
       apt-get install -y \
+        ca-certificates \
         build-essential \
         pkg-config \
         libssl-dev \
-        clang \
-        llvm \
-        libclang-dev \
+        clang-21 \
+        llvm-21 \
+        libclang-21-dev \
         libelf-dev \
         zlib1g-dev \
         linux-headers-generic \
         expect \
         git \
-        curl
+        curl \
+        wget \
+        lsb-release \
+        gnupg \
+        libpolly-21-dev
   - mode: user
     script: |
       #!/bin/bash
@@ -45,7 +51,7 @@ provision:
       source "$HOME/.cargo/env"
 
       rustup toolchain install nightly
-      rustup component add clippy rust-src rustfmt --toolchain nightly
+      rustup component add --toolchain nightly clippy rust-src rustfmt
       rustup toolchain install stable
       rustup default nightly
 
@@ -54,6 +60,7 @@ provision:
       fi
 
       if ! command -v bpf-linker >/dev/null 2>&1; then
+        # Build bpf-linker against LLVM 21 to match Aya CI
         cargo install bpf-linker --git https://github.com/aya-rs/bpf-linker.git --features llvm-21 --no-default-features
       fi
 ssh:
