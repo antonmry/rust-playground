@@ -44,7 +44,8 @@ provision:
       fi
       source "$HOME/.cargo/env"
 
-      rustup toolchain install nightly --component clippy rust-src rustfmt
+      rustup toolchain install nightly
+      rustup component add clippy rust-src rustfmt --toolchain nightly
       rustup toolchain install stable
       rustup default nightly
 
