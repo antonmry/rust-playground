@@ -3,11 +3,6 @@ images:
     arch: "x86_64"
   - location: https://cloud-images.ubuntu.com/releases/25.10/release/ubuntu-25.10-server-cloudimg-arm64.img
     arch: "aarch64"
-mounts:
-  - location: "~"
-    writable: true
-  - location: "~/Workspace/Galiglobal/rust-playground/ebpf-aya"
-    writable: true
 provision:
   - mode: system
     script: |
@@ -67,6 +62,6 @@ ssh:
   localPort: 60022
   loadDotSSHPubKeys: true
 message: |
-  Lima VM configured for Aya CI parity.
-  Start it with: limactl start --name aya-ci lima-aya.yaml
-  Once running, enter the VM via: limactl shell aya-ci
+  Lima Aya VM configured for Aya CI parity.
+  Start it with: limactl start --name aya-vm lima-aya.yaml
+  Once running, enter the VM via: limactl shell aya-vm
