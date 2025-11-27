@@ -16,33 +16,34 @@ pub fn print_result(format: &str, result: &RunResult) -> Result<()> {
 }
 
 fn print_text(result: &RunResult) -> Result<()> {
+    let total_energy_j = match (result.cpu_energy_j, result.gpu_energy_j) {
+        (None, None) => None,
+        _ => Some(result.cpu_energy_j.unwrap_or(0.0) + result.gpu_energy_j.unwrap_or(0.0)),
+    };
+    let total_energy_kwh = total_energy_j.map(|v| v / 3_600_000.0);
+    let avg_cpu_power_w = result
+        .cpu_energy_j
+        .map(|v| average_power(v, result.duration_s));
+    let avg_gpu_power_w = result
+        .gpu_energy_j
+        .map(|v| average_power(v, result.duration_s));
+    let avg_total_power_w = total_energy_j.map(|v| average_power(v, result.duration_s));
+
     let mut out = io::stdout();
     writeln!(
         out,
         "Command: {}",
         shell_words::join(result.command.iter().map(|s| s.as_str()))
     )?;
-    writeln!(out, "Duration: {:.2} s", result.duration_s)?;
+    writeln!(out, "duration_s: {:.6}", result.duration_s)?;
+    writeln!(out, "cpu_energy_j: {}", format_opt(result.cpu_energy_j))?;
+    writeln!(out, "gpu_energy_j: {}", format_opt(result.gpu_energy_j))?;
+    writeln!(out, "total_energy_kwh: {}", format_opt(total_energy_kwh))?;
+    writeln!(out, "total_energy_j: {}", format_opt(total_energy_j))?;
+    writeln!(out, "avg_cpu_power_w: {}", format_opt(avg_cpu_power_w))?;
+    writeln!(out, "avg_gpu_power_w: {}", format_opt(avg_gpu_power_w))?;
+    writeln!(out, "avg_total_power_w: {}", format_opt(avg_total_power_w))?;
     writeln!(out)?;
-
-    let mut has_energy = false;
-    if let Some(cpu) = result.cpu_energy_j {
-        let avg = average_power(cpu, result.duration_s);
-        writeln!(out, "CPU energy:  {:.2} J (avg {:.2} W)", cpu, avg)?;
-        has_energy = true;
-    }
-    if let Some(gpu) = result.gpu_energy_j {
-        let avg = average_power(gpu, result.duration_s);
-        writeln!(out, "GPU energy:  {:.2} J (avg {:.2} W)", gpu, avg)?;
-        has_energy = true;
-    }
-
-    if has_energy {
-        let total = result.cpu_energy_j.unwrap_or(0.0) + result.gpu_energy_j.unwrap_or(0.0);
-        let avg = average_power(total, result.duration_s);
-        writeln!(out, "Total:       {:.2} J (avg {:.2} W)", total, avg)?;
-        writeln!(out)?;
-    }
 
     writeln!(
         out,
@@ -63,6 +64,8 @@ struct JsonResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     total_energy_j: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    total_energy_kwh: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     avg_cpu_power_w: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     avg_gpu_power_w: Option<f64>,
@@ -82,6 +85,7 @@ fn print_json(result: &RunResult) -> Result<()> {
         cpu_energy_j: result.cpu_energy_j,
         gpu_energy_j: result.gpu_energy_j,
         total_energy_j: total_energy,
+        total_energy_kwh: total_energy.map(|v| v / 3_600_000.0),
         avg_cpu_power_w: result
             .cpu_energy_j
             .map(|v| average_power(v, result.duration_s)),
@@ -101,5 +105,12 @@ fn average_power(energy_j: f64, duration_s: f64) -> f64 {
         energy_j / duration_s
     } else {
         0.0
+    }
+}
+
+fn format_opt(value: Option<f64>) -> String {
+    match value {
+        Some(v) => format!("{:.6}", v),
+        None => "N/A".to_string(),
     }
 }

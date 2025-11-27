@@ -37,7 +37,13 @@ impl CpuRapl {
         }
         let mut domains = Vec::new();
 
-        for entry in WalkDir::new(&root).into_iter().filter_map(|e| e.ok()) {
+        // RAPL entries are often symlinked from /sys/class/powercap into devices;
+        // follow links so we discover real energy counters.
+        for entry in WalkDir::new(&root)
+            .follow_links(true)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             if entry.file_name() != "energy_uj" {
                 continue;
             }
@@ -106,7 +112,16 @@ impl NodeEnergyBackend for CpuRapl {
 }
 
 fn read_u64(path: &Path) -> Result<u64> {
-    let contents = fs::read_to_string(path)?;
+    let contents = fs::read_to_string(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            EnergyError::BackendUnavailable(format!(
+                "Permission denied reading {}. Grant read access to RAPL files (e.g. `sudo setcap cap_dac_read_search+ep /path/to/energy-run`) or run as root.",
+                path.display()
+            ))
+        } else {
+            e.into()
+        }
+    })?;
     let trimmed = contents.trim();
     trimmed
         .parse::<u64>()
