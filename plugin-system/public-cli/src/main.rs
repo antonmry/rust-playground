@@ -20,9 +20,17 @@ fn plugin_path() -> PathBuf {
         return PathBuf::from(arg);
     }
 
-    let mut path = PathBuf::from("plugins");
-    path.push(plugin_filename());
-    path
+    let filename = plugin_filename();
+
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(dir) = exe_path.parent() {
+            let mut path = dir.to_path_buf();
+            path.push(&filename);
+            return path;
+        }
+    }
+
+    PathBuf::from(filename)
 }
 
 fn plugin_filename() -> String {
@@ -37,6 +45,7 @@ fn load_plugin_message(path: &Path) -> Result<String, String> {
         return Err("plugin file not found".to_string());
     }
 
+    // Safety: we assume the plugin exposes `plugin_message` with C ABI and returns a valid, NUL-terminated static string.
     unsafe {
         let lib = libloading::Library::new(path).map_err(|e| e.to_string())?;
         let func: libloading::Symbol<unsafe extern "C" fn() -> *const std::os::raw::c_char> =
