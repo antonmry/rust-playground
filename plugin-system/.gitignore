@@ -1,0 +1,14 @@
+/target/
+**/*.rs.bk
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local runtime plugins
+/plugins/
