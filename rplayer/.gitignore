@@ -1,0 +1,9 @@
+/target/
+/output/
+/tools/
+*.mp4
+*.cuts.csv
+/markers.json
+/app.log
+/mpv.log
+.DS_Store
