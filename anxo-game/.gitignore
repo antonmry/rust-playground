@@ -1,0 +1,21 @@
+# Rust
+/target/
+/target-linux/
+**/*.rs.bk
+
+# Temporary outputs
+/tmp/
+/anxo-screen.png
+
+# Editors
+/.idea/
+/.vscode/
+
+# OS
+.DS_Store
+
+# Env
+.env
+
+# Logs
+*.log
