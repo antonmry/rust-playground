@@ -167,7 +167,7 @@ pub fn ui_system(
             if let Some(error) = &editor.error {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
             } else if *phase == GamePhase::Won {
-                ui.colored_label(egui::Color32::LIGHT_GREEN, "Success! You reached the door.");
+                ui.colored_label(egui::Color32::LIGHT_GREEN, "Success! You reached the flag.");
             } else {
                 ui.label("Ready.");
             }
@@ -188,7 +188,7 @@ pub fn ui_system(
     Ok(())
 }
 
-const HERO_COMPLETIONS: [&str; 4] = ["move_up()", "move_down()", "move_left()", "move_right()"];
+const HERO_COMPLETIONS: [&str; 2] = ["move_left()", "move_right()"];
 
 fn completion_span(code: &str, cursor_char_index: usize) -> Option<(usize, usize, String)> {
     let cursor_byte_index = char_to_byte_index(code, cursor_char_index);

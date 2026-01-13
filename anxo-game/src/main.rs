@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{Projection, ScalingMode, Viewport};
+use bevy::asset::AssetPlugin;
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
 use bevy_egui::{
@@ -15,7 +16,9 @@ use bevy_egui::{
 use crossbeam_channel::{Receiver, TryRecvError};
 
 use commands::{Command, Direction};
-use level::{LevelAssets, LevelMap, TILE_SIZE, grid_to_world, parse_level};
+use level::{
+    DecorationKind, LevelAssets, LevelMap, TILE_SIZE, TileKind, grid_to_world, parse_level,
+};
 use ui::{EditorState, ResetRequest, RunRequest};
 
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -32,7 +35,7 @@ struct Hero {
 }
 
 #[derive(Component)]
-struct Door;
+struct Flag;
 
 #[derive(Component)]
 struct Moving {
@@ -50,6 +53,18 @@ struct ResetAnim {
     base_pos: Vec3,
 }
 
+#[derive(Component)]
+struct WinAnim {
+    total: Timer,
+    frame: Timer,
+    index: usize,
+    base_pos: Vec3,
+}
+#[derive(Component)]
+struct FlagAnim {
+    timer: Timer,
+    index: usize,
+}
 type HeroQueryData = (
     Entity,
     &'static mut Hero,
@@ -96,21 +111,43 @@ struct RunState {
     has_run: bool,
 }
 
+fn resolve_asset_root() -> String {
+    if let Ok(root) = std::env::var("ANXO_ASSET_ROOT") {
+        return root;
+    }
+    if std::path::Path::new("assets").exists() {
+        return "assets".to_string();
+    }
+    let manifest_assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+    if manifest_assets.exists() {
+        return manifest_assets.to_string_lossy().into_owned();
+    }
+    "assets".to_string()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--python-worker") {
         std::process::exit(python::run_worker());
     }
 
+    let asset_root = resolve_asset_root();
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Anxo Game".to_string(),
-                resolution: WindowResolution::new(960, 540),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Anxo Game".to_string(),
+                        resolution: WindowResolution::new(960, 540),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+                .set(AssetPlugin {
+                    file_path: asset_root,
+                    ..Default::default()
+                }),
+        )
         .insert_resource(ClearColor(Color::srgb(0.08, 0.08, 0.1)))
         .insert_resource(EguiGlobalSettings {
             auto_create_primary_context: false,
@@ -147,6 +184,8 @@ fn main() {
                 poll_python_results,
                 update_camera_viewport,
                 reset_animation_system,
+                win_animation_system,
+                flag_animation_system,
                 playback_system,
                 movement_system,
                 win_system,
@@ -162,9 +201,20 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     let use_placeholders = std::env::var("ANXO_PLACEHOLDER").ok().as_deref() == Some("1");
     let world_layer = RenderLayers::layer(0);
     let assets = LevelAssets {
-        floor: asset_server.load("kenney_pixel_platformer/Tiles/Backgrounds/tile_0000.png"),
-        wall: asset_server.load("kenney_pixel_platformer/Tiles/tile_0001.png"),
-        door: asset_server.load("kenney_pixel_platformer/Tiles/tile_0017.png"),
+        background_base: asset_server.load("kenney_pixel_platformer/Tiles/Backgrounds/tile_0000.png"),
+        background_row0: asset_server.load("kenney_pixel_platformer/Tiles/Backgrounds/tile_0016.png"),
+        background_row1: vec![
+            asset_server.load("kenney_pixel_platformer/Tiles/Backgrounds/tile_0008.png"),
+            asset_server.load("kenney_pixel_platformer/Tiles/Backgrounds/tile_0009.png"),
+            asset_server.load("kenney_pixel_platformer/Tiles/Backgrounds/tile_0010.png"),
+            asset_server.load("kenney_pixel_platformer/Tiles/Backgrounds/tile_0011.png"),
+        ],
+        ground_main: asset_server.load("kenney_pixel_platformer/Tiles/tile_0104.png"),
+        ground_top: asset_server.load("kenney_pixel_platformer/Tiles/tile_0022.png"),
+        flag_frames: vec![
+            asset_server.load("kenney_pixel_platformer/Tiles/tile_0111.png"),
+            asset_server.load("kenney_pixel_platformer/Tiles/tile_0112.png"),
+        ],
         hero: asset_server.load("kenney_pixel_platformer/Tiles/Characters/tile_0000.png"),
         hero_frames: vec![
             asset_server.load("kenney_pixel_platformer/Tiles/Characters/tile_0000.png"),
@@ -172,6 +222,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             asset_server.load("kenney_pixel_platformer/Tiles/Characters/tile_0002.png"),
             asset_server.load("kenney_pixel_platformer/Tiles/Characters/tile_0003.png"),
         ],
+        decor_cloud: asset_server.load("kenney_pixel_platformer/Tiles/tile_0125.png"),
+        decor_plant: asset_server.load("kenney_pixel_platformer/Tiles/tile_0103.png"),
     };
 
     let camera_center = Vec3::new(
@@ -201,20 +253,36 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         PrimaryEguiContext,
     ));
 
+    let max_wall_y = level.walls.iter().map(|pos| pos.y).max().unwrap_or(-1);
+    let lowest_empty_row = max_wall_y.saturating_add(1).clamp(0, level.height - 1);
+    let second_empty_row = (lowest_empty_row + 1).clamp(0, level.height - 1);
+
     for y in 0..level.height {
         for x in 0..level.width {
             let pos = IVec2::new(x, y);
             let world_pos = grid_to_world(pos);
+            let background_image = if y == lowest_empty_row {
+                assets.background_row0.clone()
+            } else if y == second_empty_row {
+                let index = (x as usize) % assets.background_row1.len().max(1);
+                assets
+                    .background_row1
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| assets.background_base.clone())
+            } else {
+                assets.background_base.clone()
+            };
             commands.spawn((
                 if use_placeholders {
                     Sprite {
-                        color: Color::srgb(0.2, 0.22, 0.25),
+                        color: Color::srgb(0.72, 0.86, 0.9),
                         custom_size: Some(Vec2::splat(TILE_SIZE)),
                         ..Default::default()
                     }
                 } else {
                     Sprite {
-                        image: assets.floor.clone(),
+                        image: background_image,
                         custom_size: Some(Vec2::splat(TILE_SIZE)),
                         ..Default::default()
                     }
@@ -225,22 +293,50 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         }
     }
 
-    for wall_pos in &level.walls {
+    for (pos, kind) in &level.tiles {
+        let (color, image) = match kind {
+            TileKind::GroundMain => (Color::srgb(0.32, 0.24, 0.16), assets.ground_main.clone()),
+            TileKind::GroundTop => (Color::srgb(0.5, 0.4, 0.25), assets.ground_top.clone()),
+        };
         commands.spawn((
             if use_placeholders {
                 Sprite {
-                    color: Color::srgb(0.12, 0.12, 0.12),
+                    color,
                     custom_size: Some(Vec2::splat(TILE_SIZE)),
                     ..Default::default()
                 }
             } else {
                 Sprite {
-                    image: assets.wall.clone(),
+                    image,
                     custom_size: Some(Vec2::splat(TILE_SIZE)),
                     ..Default::default()
                 }
             },
-            Transform::from_translation(grid_to_world(*wall_pos) + Vec3::new(0.0, 0.0, 1.0)),
+            Transform::from_translation(grid_to_world(*pos) + Vec3::new(0.0, 0.0, 1.0)),
+            world_layer.clone(),
+        ));
+    }
+
+    for decoration in &level.decorations {
+        let (color, image, z) = match decoration.kind {
+            DecorationKind::Cloud => (Color::srgb(0.95, 0.98, 1.0), assets.decor_cloud.clone(), 0.6),
+            DecorationKind::Plant => (Color::srgb(0.2, 0.6, 0.25), assets.decor_plant.clone(), 1.2),
+        };
+        commands.spawn((
+            if use_placeholders {
+                Sprite {
+                    color,
+                    custom_size: Some(Vec2::splat(TILE_SIZE)),
+                    ..Default::default()
+                }
+            } else {
+                Sprite {
+                    image,
+                    custom_size: Some(Vec2::splat(TILE_SIZE)),
+                    ..Default::default()
+                }
+            },
+            Transform::from_translation(grid_to_world(decoration.pos) + Vec3::new(0.0, 0.0, z)),
             world_layer.clone(),
         ));
     }
@@ -248,20 +344,28 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn((
         if use_placeholders {
             Sprite {
-                color: Color::srgb(0.2, 0.6, 0.25),
+                color: Color::srgb(0.85, 0.2, 0.2),
                 custom_size: Some(Vec2::splat(TILE_SIZE)),
                 ..Default::default()
             }
         } else {
             Sprite {
-                image: assets.door.clone(),
+                image: assets
+                    .flag_frames
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| assets.ground_main.clone()),
                 custom_size: Some(Vec2::splat(TILE_SIZE)),
                 ..Default::default()
             }
         },
-        Transform::from_translation(grid_to_world(level.door) + Vec3::new(0.0, 0.0, 1.0)),
+        Transform::from_translation(grid_to_world(level.flag) + Vec3::new(0.0, 0.0, 2.0)),
         world_layer.clone(),
-        Door,
+        Flag,
+        FlagAnim {
+            timer: Timer::from_seconds(0.35, TimerMode::Repeating),
+            index: 0,
+        },
     ));
 
     commands.spawn((
@@ -278,7 +382,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                 ..Default::default()
             }
         },
-        Transform::from_translation(grid_to_world(level.hero_start) + Vec3::new(0.0, 0.0, 2.0)),
+        Transform::from_translation(grid_to_world(level.hero_start) + Vec3::new(0.0, 0.0, 3.0)),
         world_layer,
         Hero {
             grid_pos: level.hero_start,
@@ -376,6 +480,18 @@ fn poll_python_results(
             python_task.receiver = None;
             match result {
                 Ok(parsed_commands) => {
+                    if parsed_commands.iter().any(|command| {
+                        matches!(command, Command::Move(Direction::Up | Direction::Down))
+                    }) {
+                        command_queue.commands.clear();
+                        command_queue.index = 0;
+                        editor.error = Some(
+                            "Only move_left() and move_right() are allowed in level 1."
+                                .to_string(),
+                        );
+                        *phase = GamePhase::Editing;
+                        return;
+                    }
                     command_queue.commands = parsed_commands;
                     command_queue.index = 0;
                     *phase = GamePhase::Playing;
@@ -409,7 +525,7 @@ fn playback_system(
     mut timer: ResMut<PlaybackTimer>,
     level: Res<LevelMap>,
     mut command_queue: ResMut<CommandQueue>,
-    phase: Res<GamePhase>,
+    mut phase: ResMut<GamePhase>,
     mut editor: ResMut<EditorState>,
     mut hero_query: Query<HeroQueryData>,
     mut commands: Commands,
@@ -437,26 +553,24 @@ fn playback_system(
         return;
     };
 
-    let mut target = hero.grid_pos;
-    match command {
-        Command::Move(Direction::Up) => target.y += 1,
-        Command::Move(Direction::Down) => target.y -= 1,
-        Command::Move(Direction::Left) => target.x -= 1,
-        Command::Move(Direction::Right) => target.x += 1,
-    }
+    let target = match command {
+        Command::Move(Direction::Left) => find_horizontal_target(&level, hero.grid_pos, -1),
+        Command::Move(Direction::Right) => find_horizontal_target(&level, hero.grid_pos, 1),
+        Command::Move(Direction::Up | Direction::Down) => {
+            editor.error =
+                Some("Only move_left() and move_right() are allowed in level 1.".to_string());
+            *phase = GamePhase::Editing;
+            return;
+        }
+    };
 
-    if target.x < 0 || target.y < 0 || target.x >= level.width || target.y >= level.height {
-        editor.error = Some("You can't walk through walls.".to_string());
+    let Some(target) = target else {
+        editor.error = Some("You can't move there.".to_string());
         return;
-    }
-
-    if level.is_wall(target) {
-        editor.error = Some("You can't walk through walls.".to_string());
-        return;
-    }
+    };
 
     let start = transform.translation;
-    let end = grid_to_world(target) + Vec3::new(0.0, 0.0, 2.0);
+    let end = grid_to_world(target) + Vec3::new(0.0, 0.0, 3.0);
     commands.entity(hero_entity).insert(Moving {
         start,
         end,
@@ -488,19 +602,28 @@ fn movement_system(
 }
 
 fn win_system(
-    hero_query: Query<(&Hero, Option<&Moving>)>,
+    mut hero_query: Query<(Entity, &Hero, Option<&Moving>, Option<&WinAnim>)>,
     level: Res<LevelMap>,
     mut phase: ResMut<GamePhase>,
+    mut commands: Commands,
 ) {
     if *phase != GamePhase::Playing {
         return;
     }
-    let Ok((hero, moving)) = hero_query.single() else {
+    let Ok((entity, hero, moving, win_anim)) = hero_query.single() else {
         return;
     };
 
-    if moving.is_none() && hero.grid_pos == level.door {
+    if moving.is_none() && hero.grid_pos == level.flag {
         *phase = GamePhase::Won;
+        if win_anim.is_none() {
+            commands.entity(entity).insert(WinAnim {
+                total: Timer::from_seconds(0.6, TimerMode::Once),
+                frame: Timer::from_seconds(0.08, TimerMode::Repeating),
+                index: 0,
+                base_pos: grid_to_world(hero.grid_pos) + Vec3::new(0.0, 0.0, 3.0),
+            });
+        }
     }
 }
 
@@ -548,7 +671,7 @@ fn reset_game_state(
 
     if let Ok((entity, mut hero, mut transform, _)) = hero_query.single_mut() {
         hero.grid_pos = level.hero_start;
-        transform.translation = grid_to_world(level.hero_start) + Vec3::new(0.0, 0.0, 2.0);
+        transform.translation = grid_to_world(level.hero_start) + Vec3::new(0.0, 0.0, 3.0);
         commands.entity(entity).remove::<Moving>();
         if animate {
             trigger_reset_animation(level, hero_query, commands);
@@ -563,7 +686,7 @@ fn trigger_reset_animation(
 ) {
     if let Ok((entity, mut hero, mut transform, _)) = hero_query.single_mut() {
         hero.grid_pos = level.hero_start;
-        transform.translation = grid_to_world(level.hero_start) + Vec3::new(0.0, 0.0, 2.0);
+        transform.translation = grid_to_world(level.hero_start) + Vec3::new(0.0, 0.0, 3.0);
         commands.entity(entity).remove::<Moving>();
         commands.entity(entity).insert(ResetAnim {
             total: Timer::from_seconds(0.8, TimerMode::Once),
@@ -608,6 +731,91 @@ fn reset_animation_system(
             commands.entity(entity).remove::<ResetAnim>();
         }
     }
+}
+
+fn win_animation_system(
+    time: Res<Time>,
+    assets: Res<LevelAssets>,
+    placeholder: Res<PlaceholderMode>,
+    mut commands: Commands,
+    mut hero_query: Query<(Entity, &mut Sprite, &mut Transform, &mut WinAnim)>,
+) {
+    for (entity, mut sprite, mut transform, mut anim) in &mut hero_query {
+        anim.total.tick(time.delta());
+        anim.frame.tick(time.delta());
+        let t = anim.total.elapsed_secs() / anim.total.duration().as_secs_f32().max(f32::EPSILON);
+        let hop = (t * std::f32::consts::TAU).sin() * 10.0;
+        transform.translation = anim.base_pos + Vec3::new(0.0, hop, 0.0);
+        if anim.frame.just_finished() {
+            anim.index = anim.index.saturating_add(1);
+            if placeholder.0 {
+                let pulse = if anim.index % 2 == 0 { 0.9 } else { 0.6 };
+                sprite.color = Color::srgb(pulse, pulse, 0.2);
+            } else if !assets.hero_frames.is_empty() {
+                let frame_index = anim.index % assets.hero_frames.len();
+                sprite.image = assets.hero_frames[frame_index].clone();
+                sprite.custom_size = Some(Vec2::splat(TILE_SIZE));
+            }
+        }
+
+        if anim.total.is_finished() {
+            if !placeholder.0 {
+                sprite.image = assets.hero.clone();
+                sprite.custom_size = Some(Vec2::splat(TILE_SIZE));
+            }
+            transform.translation = anim.base_pos;
+            commands.entity(entity).remove::<WinAnim>();
+        }
+    }
+}
+
+fn flag_animation_system(
+    time: Res<Time>,
+    assets: Res<LevelAssets>,
+    placeholder: Res<PlaceholderMode>,
+    mut flag_query: Query<(&mut Sprite, &mut FlagAnim)>,
+) {
+    for (mut sprite, mut anim) in &mut flag_query {
+        anim.timer.tick(time.delta());
+        if !anim.timer.just_finished() {
+            continue;
+        }
+        anim.index = anim.index.saturating_add(1);
+        if placeholder.0 {
+            let pulse = if anim.index % 2 == 0 { 0.9 } else { 0.6 };
+            sprite.color = Color::srgb(0.9, pulse, pulse);
+        } else if !assets.flag_frames.is_empty() {
+            let frame_index = anim.index % assets.flag_frames.len();
+            sprite.image = assets.flag_frames[frame_index].clone();
+            sprite.custom_size = Some(Vec2::splat(TILE_SIZE));
+        }
+    }
+}
+
+fn find_horizontal_target(level: &LevelMap, current: IVec2, dx: i32) -> Option<IVec2> {
+    let candidates = [0, 1, -1];
+    for dy in candidates {
+        let target = IVec2::new(current.x + dx, current.y + dy);
+        if !in_bounds(level, target) {
+            continue;
+        }
+        if level.is_wall(target) {
+            continue;
+        }
+        let below = IVec2::new(target.x, target.y - 1);
+        if !in_bounds(level, below) {
+            continue;
+        }
+        if !level.is_wall(below) {
+            continue;
+        }
+        return Some(target);
+    }
+    None
+}
+
+fn in_bounds(level: &LevelMap, pos: IVec2) -> bool {
+    pos.x >= 0 && pos.y >= 0 && pos.x < level.width && pos.y < level.height
 }
 
 fn update_camera_viewport(

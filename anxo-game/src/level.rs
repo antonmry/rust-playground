@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
@@ -9,8 +9,10 @@ pub struct LevelMap {
     pub width: i32,
     pub height: i32,
     pub walls: HashSet<IVec2>,
-    pub door: IVec2,
+    pub flag: IVec2,
     pub hero_start: IVec2,
+    pub decorations: Vec<Decoration>,
+    pub tiles: HashMap<IVec2, TileKind>,
 }
 
 impl LevelMap {
@@ -21,17 +23,42 @@ impl LevelMap {
 
 #[derive(Resource, Clone)]
 pub struct LevelAssets {
-    pub floor: Handle<Image>,
-    pub wall: Handle<Image>,
-    pub door: Handle<Image>,
+    pub ground_main: Handle<Image>,
+    pub ground_top: Handle<Image>,
+    pub background_base: Handle<Image>,
+    pub background_row0: Handle<Image>,
+    pub background_row1: Vec<Handle<Image>>,
+    pub flag_frames: Vec<Handle<Image>>,
     pub hero: Handle<Image>,
     pub hero_frames: Vec<Handle<Image>>,
+    pub decor_cloud: Handle<Image>,
+    pub decor_plant: Handle<Image>,
+}
+
+#[derive(Clone, Copy)]
+pub enum DecorationKind {
+    Cloud,
+    Plant,
+}
+
+#[derive(Clone, Copy)]
+pub enum TileKind {
+    GroundMain,
+    GroundTop,
+}
+
+#[derive(Clone, Copy)]
+pub struct Decoration {
+    pub kind: DecorationKind,
+    pub pos: IVec2,
 }
 
 pub fn parse_level(text: &str) -> LevelMap {
     let mut walls = HashSet::new();
-    let mut door = IVec2::ZERO;
+    let mut flag = IVec2::ZERO;
     let mut hero_start = IVec2::ZERO;
+    let mut decorations = Vec::new();
+    let mut tiles = HashMap::new();
     let mut width = 0;
 
     let lines: Vec<&str> = text.lines().collect();
@@ -43,13 +70,26 @@ pub fn parse_level(text: &str) -> LevelMap {
             match ch {
                 '#' => {
                     walls.insert(pos);
+                    tiles.insert(pos, TileKind::GroundMain);
                 }
-                'D' => {
-                    door = pos;
+                '-' => {
+                    walls.insert(pos);
+                    tiles.insert(pos, TileKind::GroundTop);
+                }
+                'F' => {
+                    flag = pos;
                 }
                 'H' => {
                     hero_start = pos;
                 }
+                'C' => decorations.push(Decoration {
+                    kind: DecorationKind::Cloud,
+                    pos,
+                }),
+                'P' => decorations.push(Decoration {
+                    kind: DecorationKind::Plant,
+                    pos,
+                }),
                 _ => {}
             }
         }
@@ -59,8 +99,10 @@ pub fn parse_level(text: &str) -> LevelMap {
         width,
         height,
         walls,
-        door,
+        flag,
         hero_start,
+        decorations,
+        tiles,
     }
 }
 
