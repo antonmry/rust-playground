@@ -52,9 +52,11 @@ pub fn ui_system(
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     let shortcuts = capture_shortcuts(ctx, focus_state.editor_focused);
+    let available = ctx.available_rect();
+    let editor_width = (available.width() / 3.0).max(320.0);
     let panel = egui::SidePanel::right("editor_panel")
-        .resizable(true)
-        .min_width(320.0)
+        .resizable(false)
+        .exact_width(editor_width)
         .show(ctx, |ui| {
             ui.heading("Code");
             ui.horizontal(|ui| {

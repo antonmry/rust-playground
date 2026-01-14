@@ -9,7 +9,7 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{Projection, ScalingMode, Viewport};
 use bevy::asset::AssetPlugin;
 use bevy::prelude::*;
-use bevy::window::WindowResolution;
+use bevy::window::{WindowMode, WindowResolution, WindowResized};
 use bevy_egui::{
     EguiContext, EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiContext,
 };
@@ -111,6 +111,18 @@ struct RunState {
     has_run: bool,
 }
 
+#[derive(Resource)]
+struct AspectLock {
+    last_size: Vec2,
+    target_size: Option<Vec2>,
+}
+
+const BASE_WIDTH_U32: u32 = 960;
+const BASE_HEIGHT_U32: u32 = 448;
+const BASE_WIDTH: f32 = BASE_WIDTH_U32 as f32;
+const BASE_HEIGHT: f32 = BASE_HEIGHT_U32 as f32;
+const BASE_ASPECT: f32 = BASE_WIDTH / BASE_HEIGHT;
+
 fn resolve_asset_root() -> String {
     if let Ok(root) = std::env::var("ANXO_ASSET_ROOT") {
         return root;
@@ -138,7 +150,9 @@ fn main() {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "Anxo Game".to_string(),
-                        resolution: WindowResolution::new(960, 540),
+                        resolution: WindowResolution::new(BASE_WIDTH_U32, BASE_HEIGHT_U32),
+                        resizable: true,
+                        mode: WindowMode::Windowed,
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -172,6 +186,10 @@ fn main() {
         })
         .insert_resource(AutoRun::default())
         .insert_resource(RunState::default())
+        .insert_resource(AspectLock {
+            last_size: Vec2::new(BASE_WIDTH, BASE_HEIGHT),
+            target_size: None,
+        })
         .add_message::<RunRequest>()
         .add_message::<ResetRequest>()
         .add_systems(Startup, setup)
@@ -182,6 +200,7 @@ fn main() {
                 auto_run_system,
                 handle_run_requests,
                 poll_python_results,
+                enforce_aspect_ratio,
                 update_camera_viewport,
                 reset_animation_system,
                 win_animation_system,
@@ -602,7 +621,7 @@ fn movement_system(
 }
 
 fn win_system(
-    mut hero_query: Query<(Entity, &Hero, Option<&Moving>, Option<&WinAnim>)>,
+    hero_query: Query<(Entity, &Hero, Option<&Moving>, Option<&WinAnim>)>,
     level: Res<LevelMap>,
     mut phase: ResMut<GamePhase>,
     mut commands: Commands,
@@ -818,6 +837,45 @@ fn in_bounds(level: &LevelMap, pos: IVec2) -> bool {
     pos.x >= 0 && pos.y >= 0 && pos.x < level.width && pos.y < level.height
 }
 
+fn enforce_aspect_ratio(
+    mut events: MessageReader<WindowResized>,
+    mut windows: Query<(Entity, &mut Window)>,
+    mut lock: ResMut<AspectLock>,
+) {
+    if events.is_empty() {
+        return;
+    }
+    let Ok((window_entity, mut window)) = windows.single_mut() else {
+        return;
+    };
+    for event in events.read() {
+        if event.window != window_entity {
+            continue;
+        }
+        let current = Vec2::new(event.width, event.height);
+        if let Some(target) = lock.target_size {
+            if (current.x - target.x).abs() < 0.5 && (current.y - target.y).abs() < 0.5 {
+                lock.last_size = target;
+                lock.target_size = None;
+                continue;
+            }
+        }
+
+        let dx = (current.x - lock.last_size.x).abs();
+        let dy = (current.y - lock.last_size.y).abs();
+        let mut width = current.x.max(1.0);
+        let mut height = current.y.max(1.0);
+        if dx >= dy {
+            height = width / BASE_ASPECT;
+        } else {
+            width = height * BASE_ASPECT;
+        }
+        let target = Vec2::new(width, height);
+        lock.target_size = Some(target);
+        window.resolution.set(width, height);
+    }
+}
+
 fn update_camera_viewport(
     windows: Query<&Window>,
     layout: Res<UiLayout>,
@@ -849,15 +907,8 @@ fn update_camera_viewport(
     let Projection::Orthographic(ref mut ortho) = *projection else {
         return;
     };
-    let viewport_aspect = viewport_width as f32 / window_size.y as f32;
-    let level_w = level.width as f32 * TILE_SIZE;
     let level_h = level.height as f32 * TILE_SIZE;
-    let level_aspect = level_w / level_h.max(f32::EPSILON);
-    let viewport_height = if viewport_aspect > level_aspect {
-        level_w / viewport_aspect
-    } else {
-        level_h
-    };
+    let viewport_height = level_h;
     ortho.scaling_mode = ScalingMode::FixedVertical { viewport_height };
     ortho.scale = 1.0;
 
