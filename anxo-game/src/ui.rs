@@ -4,7 +4,7 @@ use bevy_egui::egui;
 use egui::text::{CCursor, CCursorRange};
 use egui_code_editor::{CodeEditor, ColorTheme, Syntax};
 
-use crate::{GamePhase, UiLayout};
+use crate::{GamePhase, Levels, UiLayout};
 
 #[derive(Resource)]
 pub struct EditorState {
@@ -17,6 +17,9 @@ pub struct RunRequest(pub String);
 
 #[derive(Message)]
 pub struct ResetRequest;
+
+#[derive(Message)]
+pub struct LevelSelectRequest(pub usize);
 
 #[derive(Default)]
 pub(crate) struct AutocompleteState {
@@ -46,9 +49,11 @@ pub fn ui_system(
     mut layout: ResMut<UiLayout>,
     mut run_events: MessageWriter<RunRequest>,
     mut reset_events: MessageWriter<ResetRequest>,
+    mut level_events: MessageWriter<LevelSelectRequest>,
     mut autocomplete: Local<AutocompleteState>,
     mut focus_state: Local<FocusState>,
     phase: Res<GamePhase>,
+    levels: Res<Levels>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     let shortcuts = capture_shortcuts(ctx, focus_state.editor_focused);
@@ -59,6 +64,19 @@ pub fn ui_system(
         .exact_width(editor_width)
         .show(ctx, |ui| {
             ui.heading("Code");
+            if !levels.entries.is_empty() {
+                let mut selected = levels.current;
+                egui::ComboBox::from_id_salt("level_selector")
+                    .selected_text(&levels.entries[selected].name)
+                    .show_ui(ui, |ui| {
+                        for (index, level) in levels.entries.iter().enumerate() {
+                            ui.selectable_value(&mut selected, index, &level.name);
+                        }
+                    });
+                if selected != levels.current {
+                    level_events.write(LevelSelectRequest(selected));
+                }
+            }
             ui.horizontal(|ui| {
                 if ui.button("Run").clicked() {
                     run_events.write(RunRequest(editor.code.clone()));
@@ -169,7 +187,9 @@ pub fn ui_system(
             if let Some(error) = &editor.error {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
             } else if *phase == GamePhase::Won {
-                ui.colored_label(egui::Color32::LIGHT_GREEN, "Success! You reached the flag.");
+                ui.colored_label(egui::Color32::LIGHT_GREEN, "Success!");
+            } else if *phase == GamePhase::Evaluating {
+                ui.label("Checking...");
             } else {
                 ui.label("Ready.");
             }

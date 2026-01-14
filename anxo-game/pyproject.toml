@@ -1,0 +1,8 @@
+[project]
+name = "anxo-level-api"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["level_api"]
+package-dir = {"" = "assets/levels/_lib"}

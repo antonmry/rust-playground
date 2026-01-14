@@ -17,25 +17,31 @@ use crossbeam_channel::{Receiver, TryRecvError};
 
 use commands::{Command, Direction};
 use level::{
-    DecorationKind, LevelAssets, LevelMap, TILE_SIZE, TileKind, grid_to_world, parse_level,
+    BgTileKind, DecorationKind, LevelAssets, LevelDefinition, LevelMap, Levels, TILE_SIZE,
+    TileKind, grid_to_world, load_levels,
 };
-use ui::{EditorState, ResetRequest, RunRequest};
+use ui::{EditorState, LevelSelectRequest, ResetRequest, RunRequest};
 
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Default)]
 enum GamePhase {
     #[default]
     Editing,
     Playing,
+    Evaluating,
     Won,
 }
 
 #[derive(Component)]
 struct Hero {
     grid_pos: IVec2,
+    last_move: Option<Direction>,
 }
 
 #[derive(Component)]
 struct Flag;
+
+#[derive(Component)]
+struct LevelEntity;
 
 #[derive(Component)]
 struct Moving {
@@ -82,12 +88,24 @@ struct CommandQueue {
     index: usize,
 }
 
+#[derive(Resource, Default)]
+struct EvalStats {
+    blocked_moves: Vec<String>,
+    errors: Vec<String>,
+}
+
 #[derive(Resource)]
 struct PlaybackTimer(Timer);
 
 #[derive(Resource, Default)]
 struct PythonTask {
     receiver: Option<Receiver<Result<Vec<Command>, String>>>,
+    running: bool,
+}
+
+#[derive(Resource, Default)]
+struct EvalTask {
+    receiver: Option<Receiver<Result<(), String>>>,
     running: bool,
 }
 
@@ -111,6 +129,107 @@ struct RunState {
     has_run: bool,
 }
 
+#[derive(serde::Serialize)]
+struct EvalContext {
+    hero: HeroContext,
+    level: LevelContext,
+    commands: Vec<String>,
+    events: EventsContext,
+}
+
+#[derive(serde::Serialize)]
+struct GridPoint {
+    x: i32,
+    y: i32,
+}
+
+#[derive(serde::Serialize)]
+struct HeroContext {
+    x: i32,
+    y: i32,
+    steps: usize,
+    last_move: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct LevelContext {
+    width: i32,
+    height: i32,
+    flag: GridPoint,
+    walls: Vec<GridPoint>,
+}
+
+#[derive(serde::Serialize)]
+struct EventsContext {
+    reached_flag: bool,
+    blocked_moves: Vec<String>,
+    errors: Vec<String>,
+}
+
+fn to_python_literal(context: &EvalContext) -> String {
+    fn escape(value: &str) -> String {
+        value.replace('\\', "\\\\").replace('\'', "\\'")
+    }
+    fn format_point(point: &GridPoint) -> String {
+        format!("{{'x': {}, 'y': {}}}", point.x, point.y)
+    }
+    let commands = context
+        .commands
+        .iter()
+        .map(|cmd| format!("'{}'", escape(cmd)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let blocked_moves = context
+        .events
+        .blocked_moves
+        .iter()
+        .map(|value| format!("'{}'", escape(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let errors = context
+        .events
+        .errors
+        .iter()
+        .map(|value| format!("'{}'", escape(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let reached_flag = if context.events.reached_flag {
+        "True"
+    } else {
+        "False"
+    };
+    let last_move = context
+        .hero
+        .last_move
+        .as_ref()
+        .map(|value| format!("'{}'", escape(value)))
+        .unwrap_or_else(|| "None".to_string());
+    let walls = context
+        .level
+        .walls
+        .iter()
+        .map(|pos| format!("({}, {})", pos.x, pos.y))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{{'hero': {{'x': {}, 'y': {}, 'steps': {}, 'last_move': {}}}, \
+'level': {{'width': {}, 'height': {}, 'flag': {}, 'walls': [{}]}}, \
+'commands': [{}], 'events': {{'reached_flag': {}, 'blocked_moves': [{}], 'errors': [{}]}}}}",
+        context.hero.x,
+        context.hero.y,
+        context.hero.steps,
+        last_move,
+        context.level.width,
+        context.level.height,
+        format_point(&context.level.flag),
+        walls,
+        commands,
+        reached_flag,
+        blocked_moves,
+        errors
+    )
+}
+
 #[derive(Resource)]
 struct AspectLock {
     last_size: Vec2,
@@ -122,6 +241,13 @@ const BASE_HEIGHT_U32: u32 = 448;
 const BASE_WIDTH: f32 = BASE_WIDTH_U32 as f32;
 const BASE_HEIGHT: f32 = BASE_HEIGHT_U32 as f32;
 const BASE_ASPECT: f32 = BASE_WIDTH / BASE_HEIGHT;
+
+fn initial_code(default_template: &str) -> String {
+    if let Ok(code) = std::env::var("ANXO_START_CODE") {
+        return code;
+    }
+    default_template.to_string()
+}
 
 fn resolve_asset_root() -> String {
     if let Ok(root) = std::env::var("ANXO_ASSET_ROOT") {
@@ -142,8 +268,18 @@ fn main() {
     if args.iter().any(|arg| arg == "--python-worker") {
         std::process::exit(python::run_worker());
     }
+    if args.iter().any(|arg| arg == "--python-eval-worker") {
+        std::process::exit(python::run_eval_worker());
+    }
 
     let asset_root = resolve_asset_root();
+    let asset_root_path = std::path::PathBuf::from(asset_root.clone());
+    let levels = load_levels(&asset_root_path).expect("Failed to load levels");
+    let initial_template = levels
+        .entries
+        .get(levels.current)
+        .map(|level| level.template.clone())
+        .unwrap_or_default();
     App::new()
         .add_plugins(
             DefaultPlugins
@@ -169,6 +305,7 @@ fn main() {
         })
         .add_plugins(EguiPlugin::default())
         .insert_resource(CommandQueue::default())
+        .insert_resource(EvalStats::default())
         .insert_resource(PlaybackTimer(Timer::from_seconds(
             0.2,
             TimerMode::Repeating,
@@ -181,17 +318,20 @@ fn main() {
             pixels_per_point: 1.0,
         })
         .insert_resource(EditorState {
-            code: initial_code(),
+            code: initial_code(&initial_template),
             error: None,
         })
         .insert_resource(AutoRun::default())
         .insert_resource(RunState::default())
+        .insert_resource(EvalTask::default())
+        .insert_resource(levels)
         .insert_resource(AspectLock {
             last_size: Vec2::new(BASE_WIDTH, BASE_HEIGHT),
             target_size: None,
         })
         .add_message::<RunRequest>()
         .add_message::<ResetRequest>()
+        .add_message::<LevelSelectRequest>()
         .add_systems(Startup, setup)
         .add_systems(EguiPrimaryContextPass, ui::ui_system)
         .add_systems(
@@ -200,7 +340,9 @@ fn main() {
                 auto_run_system,
                 handle_run_requests,
                 poll_python_results,
+                poll_eval_results,
                 enforce_aspect_ratio,
+                select_level_system,
                 update_camera_viewport,
                 reset_animation_system,
                 win_animation_system,
@@ -214,9 +356,12 @@ fn main() {
         .run();
 }
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let level_text = include_str!("../assets/levels/level1.txt");
-    let level = parse_level(level_text);
+fn setup(mut commands: Commands, asset_server: Res<AssetServer>, levels: Res<Levels>) {
+    let level_def = levels
+        .entries
+        .get(levels.current)
+        .expect("Missing current level");
+    let level = &level_def.foreground;
     let use_placeholders = std::env::var("ANXO_PLACEHOLDER").ok().as_deref() == Some("1");
     let world_layer = RenderLayers::layer(0);
     let assets = LevelAssets {
@@ -271,26 +416,54 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         EguiContext::default(),
         PrimaryEguiContext,
     ));
+    spawn_level(&mut commands, level_def, &assets, use_placeholders, &world_layer);
 
-    let max_wall_y = level.walls.iter().map(|pos| pos.y).max().unwrap_or(-1);
-    let lowest_empty_row = max_wall_y.saturating_add(1).clamp(0, level.height - 1);
-    let second_empty_row = (lowest_empty_row + 1).clamp(0, level.height - 1);
+    commands.insert_resource(assets);
+    commands.insert_resource(PlaceholderMode(use_placeholders));
+}
+
+fn spawn_level(
+    commands: &mut Commands,
+    level_def: &LevelDefinition,
+    assets: &LevelAssets,
+    use_placeholders: bool,
+    world_layer: &RenderLayers,
+) {
+    let level = level_def.foreground.clone();
 
     for y in 0..level.height {
         for x in 0..level.width {
             let pos = IVec2::new(x, y);
             let world_pos = grid_to_world(pos);
-            let background_image = if y == lowest_empty_row {
-                assets.background_row0.clone()
-            } else if y == second_empty_row {
-                let index = (x as usize) % assets.background_row1.len().max(1);
-                assets
+            let tile_kind = level_def
+                .background
+                .tiles
+                .get(&pos)
+                .copied()
+                .unwrap_or(BgTileKind::Base);
+            let background_image = match tile_kind {
+                BgTileKind::Base => assets.background_base.clone(),
+                BgTileKind::Row0 => assets.background_row0.clone(),
+                BgTileKind::Row1A => assets
                     .background_row1
-                    .get(index)
+                    .get(0)
                     .cloned()
-                    .unwrap_or_else(|| assets.background_base.clone())
-            } else {
-                assets.background_base.clone()
+                    .unwrap_or_else(|| assets.background_base.clone()),
+                BgTileKind::Row1B => assets
+                    .background_row1
+                    .get(1)
+                    .cloned()
+                    .unwrap_or_else(|| assets.background_base.clone()),
+                BgTileKind::Row1C => assets
+                    .background_row1
+                    .get(2)
+                    .cloned()
+                    .unwrap_or_else(|| assets.background_base.clone()),
+                BgTileKind::Row1D => assets
+                    .background_row1
+                    .get(3)
+                    .cloned()
+                    .unwrap_or_else(|| assets.background_base.clone()),
             };
             commands.spawn((
                 if use_placeholders {
@@ -308,6 +481,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                 },
                 Transform::from_translation(world_pos),
                 world_layer.clone(),
+                LevelEntity,
             ));
         }
     }
@@ -333,6 +507,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             },
             Transform::from_translation(grid_to_world(*pos) + Vec3::new(0.0, 0.0, 1.0)),
             world_layer.clone(),
+            LevelEntity,
         ));
     }
 
@@ -357,6 +532,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             },
             Transform::from_translation(grid_to_world(decoration.pos) + Vec3::new(0.0, 0.0, z)),
             world_layer.clone(),
+            LevelEntity,
         ));
     }
 
@@ -385,6 +561,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             timer: Timer::from_seconds(0.35, TimerMode::Repeating),
             index: 0,
         },
+        LevelEntity,
     ));
 
     commands.spawn((
@@ -402,15 +579,15 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             }
         },
         Transform::from_translation(grid_to_world(level.hero_start) + Vec3::new(0.0, 0.0, 3.0)),
-        world_layer,
+        world_layer.clone(),
         Hero {
             grid_pos: level.hero_start,
+            last_move: None,
         },
+        LevelEntity,
     ));
 
     commands.insert_resource(level);
-    commands.insert_resource(assets);
-    commands.insert_resource(PlaceholderMode(use_placeholders));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -420,10 +597,12 @@ fn handle_run_requests(
     mut editor: ResMut<EditorState>,
     level: Res<LevelMap>,
     mut command_queue: ResMut<CommandQueue>,
+    mut eval_stats: ResMut<EvalStats>,
     mut phase: ResMut<GamePhase>,
     mut hero_query: Query<(Entity, &mut Hero, &mut Transform, Option<&Moving>)>,
     mut commands: Commands,
     run_state: ResMut<RunState>,
+    mut eval_task: ResMut<EvalTask>,
 ) {
     if python_task.running {
         events.clear();
@@ -437,6 +616,7 @@ fn handle_run_requests(
                 &mut command_queue,
                 &mut phase,
                 &mut editor,
+                &mut eval_stats,
                 &mut hero_query,
                 &mut commands,
                 true,
@@ -447,12 +627,15 @@ fn handle_run_requests(
                 &mut command_queue,
                 &mut phase,
                 &mut editor,
+                &mut eval_stats,
                 &mut hero_query,
                 &mut commands,
                 false,
             );
         }
         let code = event.0.clone();
+        eval_task.running = false;
+        eval_task.receiver = None;
         let (tx, rx) = crossbeam_channel::unbounded();
         std::thread::spawn(move || {
             let result = python::run_code_via_worker(code, Duration::from_secs(1));
@@ -484,6 +667,7 @@ fn poll_python_results(
     mut command_queue: ResMut<CommandQueue>,
     mut phase: ResMut<GamePhase>,
     mut editor: ResMut<EditorState>,
+    mut eval_stats: ResMut<EvalStats>,
     _level: Res<LevelMap>,
     _hero_query: Query<(Entity, &mut Hero, &mut Transform, Option<&Moving>)>,
     _commands: Commands,
@@ -502,21 +686,25 @@ fn poll_python_results(
                     if parsed_commands.iter().any(|command| {
                         matches!(command, Command::Move(Direction::Up | Direction::Down))
                     }) {
-                        command_queue.commands.clear();
-                        command_queue.index = 0;
-                        editor.error = Some(
-                            "Only move_left() and move_right() are allowed in level 1."
-                                .to_string(),
-                        );
-                        *phase = GamePhase::Editing;
-                        return;
-                    }
+                    command_queue.commands.clear();
+                    command_queue.index = 0;
+                    editor.error = Some(
+                        "Only move_left() and move_right() are allowed in level 1."
+                            .to_string(),
+                    );
+                    eval_stats
+                        .errors
+                        .push("Only move_left() and move_right() are allowed in level 1.".to_string());
+                    *phase = GamePhase::Editing;
+                    return;
+                }
                     command_queue.commands = parsed_commands;
                     command_queue.index = 0;
                     *phase = GamePhase::Playing;
                     run_state.has_run = true;
                 }
                 Err(error) => {
+                    eval_stats.errors.push(error.clone());
                     editor.error = Some(error);
                     *phase = GamePhase::Editing;
                 }
@@ -531,11 +719,50 @@ fn poll_python_results(
     }
 }
 
-fn initial_code() -> String {
-    if let Ok(code) = std::env::var("ANXO_START_CODE") {
-        return code;
+fn poll_eval_results(
+    mut eval_task: ResMut<EvalTask>,
+    mut phase: ResMut<GamePhase>,
+    mut editor: ResMut<EditorState>,
+    mut commands: Commands,
+    hero_query: Query<(Entity, &Hero, &Transform, Option<&WinAnim>)>,
+) {
+    let Some(receiver) = eval_task.receiver.as_ref() else {
+        return;
+    };
+    match receiver.try_recv() {
+        Ok(result) => {
+            eval_task.running = false;
+            eval_task.receiver = None;
+            match result {
+                Ok(()) => {
+                    *phase = GamePhase::Won;
+                    if let Ok((entity, _hero, transform, win_anim)) = hero_query.single() {
+                        if win_anim.is_none() {
+                            commands.entity(entity).insert(WinAnim {
+                                total: Timer::from_seconds(0.6, TimerMode::Once),
+                                frame: Timer::from_seconds(0.08, TimerMode::Repeating),
+                                index: 0,
+                                base_pos: transform.translation,
+                            });
+                        }
+                    } else {
+                        *phase = GamePhase::Won;
+                    }
+                }
+                Err(error) => {
+                    editor.error = Some(error);
+                    *phase = GamePhase::Editing;
+                }
+            }
+        }
+        Err(TryRecvError::Empty) => {}
+        Err(TryRecvError::Disconnected) => {
+            eval_task.running = false;
+            eval_task.receiver = None;
+            editor.error = Some("Evaluation worker disconnected".to_string());
+            *phase = GamePhase::Editing;
+        }
     }
-    "from game import hero\n".to_string()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -546,6 +773,7 @@ fn playback_system(
     mut command_queue: ResMut<CommandQueue>,
     mut phase: ResMut<GamePhase>,
     mut editor: ResMut<EditorState>,
+    mut eval_stats: ResMut<EvalStats>,
     mut hero_query: Query<HeroQueryData>,
     mut commands: Commands,
 ) {
@@ -557,7 +785,8 @@ fn playback_system(
         return;
     }
 
-    let Ok((hero_entity, hero, transform, moving, reset_anim)) = hero_query.single_mut() else {
+    let Ok((hero_entity, mut hero, transform, moving, reset_anim)) = hero_query.single_mut()
+    else {
         return;
     };
 
@@ -572,19 +801,32 @@ fn playback_system(
         return;
     };
 
-    let target = match command {
-        Command::Move(Direction::Left) => find_horizontal_target(&level, hero.grid_pos, -1),
-        Command::Move(Direction::Right) => find_horizontal_target(&level, hero.grid_pos, 1),
+    let (direction, target) = match command {
+        Command::Move(Direction::Left) => (
+            Direction::Left,
+            find_horizontal_target(&level, hero.grid_pos, -1),
+        ),
+        Command::Move(Direction::Right) => (
+            Direction::Right,
+            find_horizontal_target(&level, hero.grid_pos, 1),
+        ),
         Command::Move(Direction::Up | Direction::Down) => {
             editor.error =
                 Some("Only move_left() and move_right() are allowed in level 1.".to_string());
+            eval_stats
+                .errors
+                .push("Only move_left() and move_right() are allowed in level 1.".to_string());
             *phase = GamePhase::Editing;
             return;
         }
     };
 
+    hero.last_move = Some(direction);
+
     let Some(target) = target else {
         editor.error = Some("You can't move there.".to_string());
+        eval_stats.blocked_moves.push(Command::Move(direction).to_wire());
+        eval_stats.errors.push("You can't move there.".to_string());
         return;
     };
 
@@ -621,28 +863,73 @@ fn movement_system(
 }
 
 fn win_system(
-    hero_query: Query<(Entity, &Hero, Option<&Moving>, Option<&WinAnim>)>,
+    hero_query: Query<(&Hero, Option<&Moving>)>,
     level: Res<LevelMap>,
+    command_queue: Res<CommandQueue>,
+    levels: Res<Levels>,
+    mut eval_task: ResMut<EvalTask>,
     mut phase: ResMut<GamePhase>,
-    mut commands: Commands,
+    eval_stats: Res<EvalStats>,
 ) {
     if *phase != GamePhase::Playing {
         return;
     }
-    let Ok((entity, hero, moving, win_anim)) = hero_query.single() else {
+    let Ok((hero, moving)) = hero_query.single() else {
         return;
     };
 
     if moving.is_none() && hero.grid_pos == level.flag {
-        *phase = GamePhase::Won;
-        if win_anim.is_none() {
-            commands.entity(entity).insert(WinAnim {
-                total: Timer::from_seconds(0.6, TimerMode::Once),
-                frame: Timer::from_seconds(0.08, TimerMode::Repeating),
-                index: 0,
-                base_pos: grid_to_world(hero.grid_pos) + Vec3::new(0.0, 0.0, 3.0),
-            });
+        if eval_task.running {
+            return;
         }
+        let level_def = match levels.entries.get(levels.current) {
+            Some(level) => level,
+            None => return,
+        };
+        let mut wall_points = level
+            .walls
+            .iter()
+            .map(|pos| GridPoint { x: pos.x, y: pos.y })
+            .collect::<Vec<_>>();
+        wall_points.sort_by_key(|pos| (pos.y, pos.x));
+        let context = EvalContext {
+            hero: HeroContext {
+                x: hero.grid_pos.x,
+                y: hero.grid_pos.y,
+                steps: command_queue.index,
+                last_move: hero.last_move.map(|dir| Command::Move(dir).to_wire()),
+            },
+            level: LevelContext {
+                width: level.width,
+                height: level.height,
+                flag: GridPoint {
+                    x: level.flag.x,
+                    y: level.flag.y,
+                },
+                walls: wall_points,
+            },
+            commands: command_queue
+                .commands
+                .iter()
+                .map(|cmd| cmd.to_wire())
+                .collect(),
+            events: EventsContext {
+                reached_flag: hero.grid_pos == level.flag,
+                blocked_moves: eval_stats.blocked_moves.clone(),
+                errors: eval_stats.errors.clone(),
+            },
+        };
+        let context_literal = to_python_literal(&context);
+        let eval_code = level_def.evaluate.clone();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        std::thread::spawn(move || {
+            let result =
+                python::run_eval_via_worker(eval_code, context_literal, Duration::from_secs(1));
+            let _ = tx.send(result);
+        });
+        eval_task.receiver = Some(rx);
+        eval_task.running = true;
+        *phase = GamePhase::Evaluating;
     }
 }
 
@@ -653,9 +940,11 @@ fn reset_system(
     mut command_queue: ResMut<CommandQueue>,
     mut phase: ResMut<GamePhase>,
     mut editor: ResMut<EditorState>,
+    mut eval_stats: ResMut<EvalStats>,
     mut hero_query: Query<(Entity, &mut Hero, &mut Transform, Option<&Moving>)>,
     mut commands: Commands,
     mut run_state: ResMut<RunState>,
+    mut eval_task: ResMut<EvalTask>,
 ) {
     if events.is_empty() {
         return;
@@ -667,11 +956,14 @@ fn reset_system(
         &mut command_queue,
         &mut phase,
         &mut editor,
+        &mut eval_stats,
         &mut hero_query,
         &mut commands,
         true,
     );
     run_state.has_run = false;
+    eval_task.running = false;
+    eval_task.receiver = None;
 }
 
 fn reset_game_state(
@@ -679,6 +971,7 @@ fn reset_game_state(
     command_queue: &mut CommandQueue,
     phase: &mut GamePhase,
     editor: &mut EditorState,
+    eval_stats: &mut EvalStats,
     hero_query: &mut Query<(Entity, &mut Hero, &mut Transform, Option<&Moving>)>,
     commands: &mut Commands,
     animate: bool,
@@ -686,12 +979,16 @@ fn reset_game_state(
     command_queue.commands.clear();
     command_queue.index = 0;
     editor.error = None;
+    eval_stats.blocked_moves.clear();
+    eval_stats.errors.clear();
     *phase = GamePhase::Editing;
 
     if let Ok((entity, mut hero, mut transform, _)) = hero_query.single_mut() {
         hero.grid_pos = level.hero_start;
+        hero.last_move = None;
         transform.translation = grid_to_world(level.hero_start) + Vec3::new(0.0, 0.0, 3.0);
         commands.entity(entity).remove::<Moving>();
+        commands.entity(entity).remove::<WinAnim>();
         if animate {
             trigger_reset_animation(level, hero_query, commands);
         }
@@ -705,8 +1002,10 @@ fn trigger_reset_animation(
 ) {
     if let Ok((entity, mut hero, mut transform, _)) = hero_query.single_mut() {
         hero.grid_pos = level.hero_start;
+        hero.last_move = None;
         transform.translation = grid_to_world(level.hero_start) + Vec3::new(0.0, 0.0, 3.0);
         commands.entity(entity).remove::<Moving>();
+        commands.entity(entity).remove::<WinAnim>();
         commands.entity(entity).insert(ResetAnim {
             total: Timer::from_seconds(0.8, TimerMode::Once),
             frame: Timer::from_seconds(0.08, TimerMode::Repeating),
@@ -874,6 +1173,66 @@ fn enforce_aspect_ratio(
         lock.target_size = Some(target);
         window.resolution.set(width, height);
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn select_level_system(
+    mut events: MessageReader<LevelSelectRequest>,
+    mut levels: ResMut<Levels>,
+    mut editor: ResMut<EditorState>,
+    mut command_queue: ResMut<CommandQueue>,
+    mut eval_stats: ResMut<EvalStats>,
+    mut phase: ResMut<GamePhase>,
+    mut run_state: ResMut<RunState>,
+    mut python_task: ResMut<PythonTask>,
+    mut eval_task: ResMut<EvalTask>,
+    assets: Res<LevelAssets>,
+    placeholder: Res<PlaceholderMode>,
+    level_entities: Query<Entity, With<LevelEntity>>,
+    mut commands: Commands,
+) {
+    if events.is_empty() {
+        return;
+    }
+    let Some(event) = events.read().last() else {
+        return;
+    };
+    if event.0 >= levels.entries.len() {
+        return;
+    }
+    if event.0 == levels.current {
+        return;
+    }
+
+    levels.current = event.0;
+    for entity in &level_entities {
+        commands.entity(entity).despawn();
+    }
+
+    command_queue.commands.clear();
+    command_queue.index = 0;
+    editor.error = None;
+    eval_stats.blocked_moves.clear();
+    eval_stats.errors.clear();
+    editor.code = levels
+        .entries
+        .get(levels.current)
+        .map(|level| level.template.clone())
+        .unwrap_or_default();
+    *phase = GamePhase::Editing;
+    run_state.has_run = false;
+    python_task.running = false;
+    python_task.receiver = None;
+    eval_task.running = false;
+    eval_task.receiver = None;
+
+    spawn_level(
+        &mut commands,
+        &levels.entries[levels.current],
+        &assets,
+        placeholder.0,
+        &RenderLayers::layer(0),
+    );
 }
 
 fn update_camera_viewport(

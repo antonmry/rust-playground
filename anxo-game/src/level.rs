@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
 
@@ -41,6 +43,16 @@ pub enum DecorationKind {
     Plant,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BgTileKind {
+    Base,
+    Row0,
+    Row1A,
+    Row1B,
+    Row1C,
+    Row1D,
+}
+
 #[derive(Clone, Copy)]
 pub enum TileKind {
     GroundMain,
@@ -53,12 +65,36 @@ pub struct Decoration {
     pub pos: IVec2,
 }
 
+#[derive(Clone)]
+pub struct BackgroundMap {
+    pub width: i32,
+    pub height: i32,
+    pub tiles: HashMap<IVec2, BgTileKind>,
+    pub ground_tiles: HashMap<IVec2, TileKind>,
+    pub walls: HashSet<IVec2>,
+}
+
+#[derive(Clone)]
+pub struct LevelDefinition {
+    pub name: String,
+    pub background: BackgroundMap,
+    pub foreground: LevelMap,
+    pub template: String,
+    pub evaluate: String,
+}
+
+#[derive(Resource)]
+pub struct Levels {
+    pub entries: Vec<LevelDefinition>,
+    pub current: usize,
+}
+
 pub fn parse_level(text: &str) -> LevelMap {
-    let mut walls = HashSet::new();
+    let walls = HashSet::new();
     let mut flag = IVec2::ZERO;
     let mut hero_start = IVec2::ZERO;
     let mut decorations = Vec::new();
-    let mut tiles = HashMap::new();
+    let tiles = HashMap::new();
     let mut width = 0;
 
     let lines: Vec<&str> = text.lines().collect();
@@ -68,14 +104,6 @@ pub fn parse_level(text: &str) -> LevelMap {
         for (col, ch) in line.chars().enumerate() {
             let pos = IVec2::new(col as i32, height - 1 - row as i32);
             match ch {
-                '#' => {
-                    walls.insert(pos);
-                    tiles.insert(pos, TileKind::GroundMain);
-                }
-                '-' => {
-                    walls.insert(pos);
-                    tiles.insert(pos, TileKind::GroundTop);
-                }
                 'F' => {
                     flag = pos;
                 }
@@ -104,6 +132,121 @@ pub fn parse_level(text: &str) -> LevelMap {
         decorations,
         tiles,
     }
+}
+
+pub fn parse_background(text: &str) -> BackgroundMap {
+    let mut tiles = HashMap::new();
+    let mut ground_tiles = HashMap::new();
+    let mut walls = HashSet::new();
+    let mut width = 0;
+    let lines: Vec<&str> = text.lines().collect();
+    let height = lines.len() as i32;
+    for (row, line) in lines.iter().enumerate() {
+        width = width.max(line.chars().count() as i32);
+        for (col, ch) in line.chars().enumerate() {
+            let pos = IVec2::new(col as i32, height - 1 - row as i32);
+            match ch {
+                '-' => {
+                    ground_tiles.insert(pos, TileKind::GroundTop);
+                    walls.insert(pos);
+                }
+                '#' => {
+                    ground_tiles.insert(pos, TileKind::GroundMain);
+                    walls.insert(pos);
+                }
+                _ => {
+                    let kind = match ch {
+                        '1' => BgTileKind::Row0,
+                        '2' => BgTileKind::Row1A,
+                        '3' => BgTileKind::Row1B,
+                        '4' => BgTileKind::Row1C,
+                        '5' => BgTileKind::Row1D,
+                        _ => BgTileKind::Base,
+                    };
+                    tiles.insert(pos, kind);
+                }
+            }
+        }
+    }
+    BackgroundMap {
+        width,
+        height,
+        tiles,
+        ground_tiles,
+        walls,
+    }
+}
+
+pub fn load_levels(asset_root: &Path) -> Result<Levels, String> {
+    let levels_root = asset_root.join("levels");
+    let mut entries = Vec::new();
+    let mut dirs: Vec<PathBuf> = fs::read_dir(&levels_root)
+        .map_err(|err| format!("Failed to read levels directory: {err}"))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.path())
+        .collect();
+    dirs.sort();
+
+    for dir in dirs {
+        let name = dir
+            .file_name()
+            .and_then(|os| os.to_str())
+            .unwrap_or("level")
+            .to_string();
+        if name.starts_with('_') {
+            continue;
+        }
+        let background_path = dir.join("background.txt");
+        let foreground_path = dir.join("foreground.txt");
+        let template_path = dir.join("template.py");
+        let evaluate_path = dir.join("evaluate.py");
+
+        if !background_path.exists()
+            || !foreground_path.exists()
+            || !template_path.exists()
+            || !evaluate_path.exists()
+        {
+            continue;
+        }
+
+        let background_text = fs::read_to_string(&background_path)
+            .map_err(|err| format!("Failed to read {background_path:?}: {err}"))?;
+        let foreground_text = fs::read_to_string(&foreground_path)
+            .map_err(|err| format!("Failed to read {foreground_path:?}: {err}"))?;
+        let template = fs::read_to_string(&template_path)
+            .map_err(|err| format!("Failed to read {template_path:?}: {err}"))?;
+        let evaluate = fs::read_to_string(&evaluate_path)
+            .map_err(|err| format!("Failed to read {evaluate_path:?}: {err}"))?;
+
+        let background = parse_background(&background_text);
+        let mut foreground = parse_level(&foreground_text);
+        if background.width != foreground.width || background.height != foreground.height {
+            return Err(format!(
+                "Level {name} background/foreground size mismatch: {}x{} vs {}x{}",
+                background.width, background.height, foreground.width, foreground.height
+            ));
+        }
+        foreground.walls.extend(background.walls.iter().copied());
+        foreground.tiles.extend(background.ground_tiles.iter().map(|(pos, tile)| (*pos, *tile)));
+
+        entries.push(LevelDefinition {
+            name,
+            background,
+            foreground,
+            template,
+            evaluate,
+        });
+    }
+
+    if entries.is_empty() {
+        return Err("No level folders found under assets/levels".to_string());
+    }
+
+    Ok(Levels {
+        entries,
+        current: 0,
+    })
 }
 
 pub fn grid_to_world(pos: IVec2) -> Vec3 {
