@@ -245,6 +245,7 @@ fn run_with_vm(
 ) -> Result<(), String> {
     let scope = vm.new_scope_with_builtins();
 
+    let commands_for_moves = commands.clone();
     let record_fn = vm.new_function(
         "__record_move",
         move |direction: String, vm: &VirtualMachine| {
@@ -261,7 +262,39 @@ fn run_with_vm(
                     return Err(err);
                 }
             };
-            let mut buffer = commands.lock().map_err(|_| {
+            let mut buffer = commands_for_moves.lock().map_err(|_| {
+                vm.new_exception_msg(
+                    vm.ctx.exceptions.runtime_error.to_owned(),
+                    "Command buffer locked".to_string(),
+                )
+            })?;
+            if buffer.len() >= MAX_COMMANDS {
+                let err = vm.new_exception_msg(
+                    vm.ctx.exceptions.runtime_error.to_owned(),
+                    format!("Too many commands (max {MAX_COMMANDS})"),
+                );
+                return Err(err);
+            }
+            buffer.push(command);
+            Ok(())
+        },
+    );
+    let commands_for_actions = commands.clone();
+    let action_fn = vm.new_function(
+        "__record_action",
+        move |action: String, vm: &VirtualMachine| {
+            let command = match action.as_str() {
+                "pick" => Command::Pick,
+                "open" => Command::Open,
+                _ => {
+                    let err = vm.new_exception_msg(
+                        vm.ctx.exceptions.value_error.to_owned(),
+                        format!("Unknown action: {action}"),
+                    );
+                    return Err(err);
+                }
+            };
+            let mut buffer = commands_for_actions.lock().map_err(|_| {
                 vm.new_exception_msg(
                     vm.ctx.exceptions.runtime_error.to_owned(),
                     "Command buffer locked".to_string(),
@@ -283,11 +316,21 @@ fn run_with_vm(
         .globals
         .set_item("__record_move", record_fn.into(), vm)
         .map_err(|err| format_python_error(vm, &err))?;
+    scope
+        .globals
+        .set_item("__record_action", action_fn.into(), vm)
+        .map_err(|err| format_python_error(vm, &err))?;
 
     let prelude = r#"
 import sys
 
 class _Game:
+    pass
+
+class _Key:
+    pass
+
+class _Padlock:
     pass
 
 class _Hero:
@@ -306,8 +349,20 @@ class _Hero:
     def move_right(self):
         self._recorder("right")
 
+    def pick(self, obj):
+        _record_action("pick")
+
+    def open(self, obj):
+        _record_action("open")
+
+_record_action = __record_action
+_key = _Key()
+_padlock = _Padlock()
+
 _game = _Game()
 _game.hero = _Hero(__record_move)
+_game.key = _key
+_game.padlock = _padlock
 
 sys.modules["game"] = _game
 "#;
@@ -362,10 +417,12 @@ class CommandLog:
         return len(self.list)
 
 class Events:
-    def __init__(self, reached_flag, blocked_moves, errors):
+    def __init__(self, reached_flag, blocked_moves, errors, key_collected, lock_unlocked):
         self.reached_flag = reached_flag
         self.blocked_moves = list(blocked_moves)
         self.errors = list(errors)
+        self.key_collected = key_collected
+        self.lock_unlocked = lock_unlocked
 
 class EvalContext:
     def __init__(self, hero, level, commands, events):
@@ -409,6 +466,8 @@ events = Events(
     _context_data['events']['reached_flag'],
     _context_data['events']['blocked_moves'],
     _context_data['events']['errors'],
+    _context_data['events']['key_collected'],
+    _context_data['events']['lock_unlocked'],
 )
 _context = EvalContext(hero, level, commands, events)
 "#,

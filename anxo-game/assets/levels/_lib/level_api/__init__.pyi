@@ -32,8 +32,15 @@ class Events:
     reached_flag: bool
     blocked_moves: List[str]
     errors: List[str]
+    key_collected: bool
+    lock_unlocked: bool
     def __init__(
-        self, reached_flag: bool, blocked_moves: Sequence[str], errors: Sequence[str]
+        self,
+        reached_flag: bool,
+        blocked_moves: Sequence[str],
+        errors: Sequence[str],
+        key_collected: bool,
+        lock_unlocked: bool,
     ) -> None: ...
 
 class EvalContext:

@@ -33,10 +33,12 @@ class CommandLog:
 
 
 class Events:
-    def __init__(self, reached_flag, blocked_moves, errors):
+    def __init__(self, reached_flag, blocked_moves, errors, key_collected, lock_unlocked):
         self.reached_flag = reached_flag
         self.blocked_moves = list(blocked_moves)
         self.errors = list(errors)
+        self.key_collected = key_collected
+        self.lock_unlocked = lock_unlocked
 
 
 class EvalContext:

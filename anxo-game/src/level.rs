@@ -13,6 +13,8 @@ pub struct LevelMap {
     pub walls: HashSet<IVec2>,
     pub flag: IVec2,
     pub hero_start: IVec2,
+    pub key_pos: Option<IVec2>,
+    pub lock_pos: Option<IVec2>,
     pub decorations: Vec<Decoration>,
     pub tiles: HashMap<IVec2, TileKind>,
 }
@@ -33,6 +35,8 @@ pub struct LevelAssets {
     pub flag_frames: Vec<Handle<Image>>,
     pub hero: Handle<Image>,
     pub hero_frames: Vec<Handle<Image>>,
+    pub key: Handle<Image>,
+    pub lock: Handle<Image>,
     pub decor_cloud: Handle<Image>,
     pub decor_plant: Handle<Image>,
 }
@@ -93,6 +97,8 @@ pub fn parse_level(text: &str) -> LevelMap {
     let walls = HashSet::new();
     let mut flag = IVec2::ZERO;
     let mut hero_start = IVec2::ZERO;
+    let mut key_pos = None;
+    let mut lock_pos = None;
     let mut decorations = Vec::new();
     let tiles = HashMap::new();
     let mut width = 0;
@@ -109,6 +115,12 @@ pub fn parse_level(text: &str) -> LevelMap {
                 }
                 'H' => {
                     hero_start = pos;
+                }
+                'K' => {
+                    key_pos = Some(pos);
+                }
+                'L' => {
+                    lock_pos = Some(pos);
                 }
                 'C' => decorations.push(Decoration {
                     kind: DecorationKind::Cloud,
@@ -129,6 +141,8 @@ pub fn parse_level(text: &str) -> LevelMap {
         walls,
         flag,
         hero_start,
+        key_pos,
+        lock_pos,
         decorations,
         tiles,
     }

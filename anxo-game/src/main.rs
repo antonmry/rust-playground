@@ -41,6 +41,16 @@ struct Hero {
 struct Flag;
 
 #[derive(Component)]
+struct KeyObject {
+    pos: IVec2,
+}
+
+#[derive(Component)]
+struct PadlockObject {
+    pos: IVec2,
+}
+
+#[derive(Component)]
 struct LevelEntity;
 
 #[derive(Component)]
@@ -92,6 +102,8 @@ struct CommandQueue {
 struct EvalStats {
     blocked_moves: Vec<String>,
     errors: Vec<String>,
+    has_key: bool,
+    lock_unlocked: bool,
 }
 
 #[derive(Resource)]
@@ -164,6 +176,8 @@ struct EventsContext {
     reached_flag: bool,
     blocked_moves: Vec<String>,
     errors: Vec<String>,
+    key_collected: bool,
+    lock_unlocked: bool,
 }
 
 fn to_python_literal(context: &EvalContext) -> String {
@@ -198,6 +212,16 @@ fn to_python_literal(context: &EvalContext) -> String {
     } else {
         "False"
     };
+    let key_collected = if context.events.key_collected {
+        "True"
+    } else {
+        "False"
+    };
+    let lock_unlocked = if context.events.lock_unlocked {
+        "True"
+    } else {
+        "False"
+    };
     let last_move = context
         .hero
         .last_move
@@ -214,7 +238,8 @@ fn to_python_literal(context: &EvalContext) -> String {
     format!(
         "{{'hero': {{'x': {}, 'y': {}, 'steps': {}, 'last_move': {}}}, \
 'level': {{'width': {}, 'height': {}, 'flag': {}, 'walls': [{}]}}, \
-'commands': [{}], 'events': {{'reached_flag': {}, 'blocked_moves': [{}], 'errors': [{}]}}}}",
+'commands': [{}], 'events': {{'reached_flag': {}, 'blocked_moves': [{}], 'errors': [{}], \
+'key_collected': {}, 'lock_unlocked': {}}}}}",
         context.hero.x,
         context.hero.y,
         context.hero.steps,
@@ -226,7 +251,9 @@ fn to_python_literal(context: &EvalContext) -> String {
         commands,
         reached_flag,
         blocked_moves,
-        errors
+        errors,
+        key_collected,
+        lock_unlocked
     )
 }
 
@@ -274,7 +301,24 @@ fn main() {
 
     let asset_root = resolve_asset_root();
     let asset_root_path = std::path::PathBuf::from(asset_root.clone());
-    let levels = load_levels(&asset_root_path).expect("Failed to load levels");
+    let mut levels = load_levels(&asset_root_path).expect("Failed to load levels");
+    if let Ok(start_level) = std::env::var("ANXO_START_LEVEL") {
+        let trimmed = start_level.trim();
+        if !trimmed.is_empty() {
+            if let Ok(index) = trimmed.parse::<usize>() {
+                if index < levels.entries.len() {
+                    levels.current = index;
+                }
+            } else if let Some((index, _)) = levels
+                .entries
+                .iter()
+                .enumerate()
+                .find(|(_, level)| level.name == trimmed)
+            {
+                levels.current = index;
+            }
+        }
+    }
     let initial_template = levels
         .entries
         .get(levels.current)
@@ -386,6 +430,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, levels: Res<Lev
             asset_server.load("kenney_pixel_platformer/Tiles/Characters/tile_0002.png"),
             asset_server.load("kenney_pixel_platformer/Tiles/Characters/tile_0003.png"),
         ],
+        key: asset_server.load("kenney_pixel_platformer/Tiles/tile_0027.png"),
+        lock: asset_server.load("kenney_pixel_platformer/Tiles/tile_0028.png"),
         decor_cloud: asset_server.load("kenney_pixel_platformer/Tiles/tile_0125.png"),
         decor_plant: asset_server.load("kenney_pixel_platformer/Tiles/tile_0103.png"),
     };
@@ -536,6 +582,52 @@ fn spawn_level(
         ));
     }
 
+    if let Some(pos) = level.key_pos {
+        commands.spawn((
+            if use_placeholders {
+                Sprite {
+                    color: Color::srgb(0.95, 0.85, 0.2),
+                    custom_size: Some(Vec2::splat(TILE_SIZE)),
+                    ..Default::default()
+                }
+            } else {
+                Sprite {
+                    image: assets.key.clone(),
+                    custom_size: Some(Vec2::splat(TILE_SIZE)),
+                    ..Default::default()
+                }
+            },
+            Transform::from_translation(grid_to_world(pos) + Vec3::new(0.0, 0.0, 2.4)),
+            world_layer.clone(),
+            Visibility::Visible,
+            KeyObject { pos },
+            LevelEntity,
+        ));
+    }
+
+    if let Some(pos) = level.lock_pos {
+        commands.spawn((
+            if use_placeholders {
+                Sprite {
+                    color: Color::srgb(0.55, 0.55, 0.6),
+                    custom_size: Some(Vec2::splat(TILE_SIZE)),
+                    ..Default::default()
+                }
+            } else {
+                Sprite {
+                    image: assets.lock.clone(),
+                    custom_size: Some(Vec2::splat(TILE_SIZE)),
+                    ..Default::default()
+                }
+            },
+            Transform::from_translation(grid_to_world(pos) + Vec3::new(0.0, 0.0, 2.3)),
+            world_layer.clone(),
+            Visibility::Visible,
+            PadlockObject { pos },
+            LevelEntity,
+        ));
+    }
+
     commands.spawn((
         if use_placeholders {
             Sprite {
@@ -600,6 +692,10 @@ fn handle_run_requests(
     mut eval_stats: ResMut<EvalStats>,
     mut phase: ResMut<GamePhase>,
     mut hero_query: Query<(Entity, &mut Hero, &mut Transform, Option<&Moving>)>,
+    mut collectibles: ParamSet<(
+        Query<(&KeyObject, &mut Visibility)>,
+        Query<(&PadlockObject, &mut Visibility)>,
+    )>,
     mut commands: Commands,
     run_state: ResMut<RunState>,
     mut eval_task: ResMut<EvalTask>,
@@ -621,6 +717,7 @@ fn handle_run_requests(
                 &mut commands,
                 true,
             );
+            reset_collectibles_visibility(&level, &mut collectibles);
         } else {
             reset_game_state(
                 &level,
@@ -632,6 +729,7 @@ fn handle_run_requests(
                 &mut commands,
                 false,
             );
+            reset_collectibles_visibility(&level, &mut collectibles);
         }
         let code = event.0.clone();
         eval_task.running = false;
@@ -775,6 +873,10 @@ fn playback_system(
     mut editor: ResMut<EditorState>,
     mut eval_stats: ResMut<EvalStats>,
     mut hero_query: Query<HeroQueryData>,
+    mut collectibles: ParamSet<(
+        Query<(Entity, &KeyObject, &mut Visibility)>,
+        Query<(Entity, &PadlockObject, &mut Visibility)>,
+    )>,
     mut commands: Commands,
 ) {
     if *phase != GamePhase::Playing {
@@ -819,6 +921,80 @@ fn playback_system(
             *phase = GamePhase::Editing;
             return;
         }
+        Command::Pick => {
+            if let Some(key_pos) = level.key_pos {
+                let adjacent = (hero.grid_pos.x - key_pos.x).abs()
+                    + (hero.grid_pos.y - key_pos.y).abs()
+                    == 1;
+                if !adjacent {
+                    editor.error = Some("Stand next to the key to pick it up.".to_string());
+                    eval_stats
+                        .errors
+                        .push("Stand next to the key to pick it up.".to_string());
+                    return;
+                }
+                if eval_stats.has_key {
+                    editor.error = Some("You already picked up the key.".to_string());
+                    eval_stats.errors.push("You already picked up the key.".to_string());
+                    return;
+                }
+                eval_stats.has_key = true;
+                let mut keys = collectibles.p0();
+                for (_entity, key, mut visibility) in keys.iter_mut() {
+                    if key.pos == key_pos {
+                        *visibility = Visibility::Hidden;
+                    }
+                }
+                command_queue.index += 1;
+                return;
+            }
+            editor.error = Some("There is no key in this level.".to_string());
+            eval_stats.errors.push("There is no key in this level.".to_string());
+            return;
+        }
+        Command::Open => {
+            if let Some(lock_pos) = level.lock_pos {
+                let adjacent = (hero.grid_pos.x - lock_pos.x).abs()
+                    + (hero.grid_pos.y - lock_pos.y).abs()
+                    == 1;
+                if !adjacent {
+                    editor.error =
+                        Some("Stand next to the padlock to open it.".to_string());
+                    eval_stats
+                        .errors
+                        .push("Stand next to the padlock to open it.".to_string());
+                    return;
+                }
+                if eval_stats.lock_unlocked {
+                    editor.error = Some("The padlock is already open.".to_string());
+                    eval_stats
+                        .errors
+                        .push("The padlock is already open.".to_string());
+                    return;
+                }
+                if !eval_stats.has_key {
+                    editor.error = Some("You need the key to unlock the padlock.".to_string());
+                    eval_stats
+                        .errors
+                        .push("You need the key to unlock the padlock.".to_string());
+                    return;
+                }
+                eval_stats.lock_unlocked = true;
+                let mut locks = collectibles.p1();
+                for (_entity, lock, mut visibility) in locks.iter_mut() {
+                    if lock.pos == lock_pos {
+                        *visibility = Visibility::Hidden;
+                    }
+                }
+                command_queue.index += 1;
+                return;
+            }
+            editor.error = Some("There is no padlock in this level.".to_string());
+            eval_stats
+                .errors
+                .push("There is no padlock in this level.".to_string());
+            return;
+        }
     };
 
     hero.last_move = Some(direction);
@@ -829,6 +1005,17 @@ fn playback_system(
         eval_stats.errors.push("You can't move there.".to_string());
         return;
     };
+
+    if target == level.flag && level.lock_pos.is_some() && !eval_stats.lock_unlocked {
+        editor.error = Some("Unlock the padlock before reaching the flag.".to_string());
+        eval_stats
+            .blocked_moves
+            .push(Command::Move(direction).to_wire());
+        eval_stats
+            .errors
+            .push("Unlock the padlock before reaching the flag.".to_string());
+        return;
+    }
 
     let start = transform.translation;
     let end = grid_to_world(target) + Vec3::new(0.0, 0.0, 3.0);
@@ -917,6 +1104,8 @@ fn win_system(
                 reached_flag: hero.grid_pos == level.flag,
                 blocked_moves: eval_stats.blocked_moves.clone(),
                 errors: eval_stats.errors.clone(),
+                key_collected: eval_stats.has_key,
+                lock_unlocked: eval_stats.lock_unlocked,
             },
         };
         let context_literal = to_python_literal(&context);
@@ -942,6 +1131,10 @@ fn reset_system(
     mut editor: ResMut<EditorState>,
     mut eval_stats: ResMut<EvalStats>,
     mut hero_query: Query<(Entity, &mut Hero, &mut Transform, Option<&Moving>)>,
+    mut collectibles: ParamSet<(
+        Query<(&KeyObject, &mut Visibility)>,
+        Query<(&PadlockObject, &mut Visibility)>,
+    )>,
     mut commands: Commands,
     mut run_state: ResMut<RunState>,
     mut eval_task: ResMut<EvalTask>,
@@ -961,6 +1154,7 @@ fn reset_system(
         &mut commands,
         true,
     );
+    reset_collectibles_visibility(&level, &mut collectibles);
     run_state.has_run = false;
     eval_task.running = false;
     eval_task.receiver = None;
@@ -981,6 +1175,8 @@ fn reset_game_state(
     editor.error = None;
     eval_stats.blocked_moves.clear();
     eval_stats.errors.clear();
+    eval_stats.has_key = false;
+    eval_stats.lock_unlocked = false;
     *phase = GamePhase::Editing;
 
     if let Ok((entity, mut hero, mut transform, _)) = hero_query.single_mut() {
@@ -991,6 +1187,28 @@ fn reset_game_state(
         commands.entity(entity).remove::<WinAnim>();
         if animate {
             trigger_reset_animation(level, hero_query, commands);
+        }
+    }
+
+}
+
+fn reset_collectibles_visibility(
+    level: &LevelMap,
+    collectibles: &mut ParamSet<(
+        Query<(&KeyObject, &mut Visibility)>,
+        Query<(&PadlockObject, &mut Visibility)>,
+    )>,
+) {
+    let mut keys = collectibles.p0();
+    for (key, mut visibility) in keys.iter_mut() {
+        if level.key_pos == Some(key.pos) {
+            *visibility = Visibility::Visible;
+        }
+    }
+    let mut locks = collectibles.p1();
+    for (lock, mut visibility) in locks.iter_mut() {
+        if level.lock_pos == Some(lock.pos) {
+            *visibility = Visibility::Visible;
         }
     }
 }

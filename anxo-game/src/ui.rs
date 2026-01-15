@@ -210,7 +210,12 @@ pub fn ui_system(
     Ok(())
 }
 
-const HERO_COMPLETIONS: [&str; 2] = ["move_left()", "move_right()"];
+const HERO_COMPLETIONS: [&str; 4] = [
+    "move_left()",
+    "move_right()",
+    "pick(key)",
+    "open(padlock)",
+];
 
 fn completion_span(code: &str, cursor_char_index: usize) -> Option<(usize, usize, String)> {
     let cursor_byte_index = char_to_byte_index(code, cursor_char_index);

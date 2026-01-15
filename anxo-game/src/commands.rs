@@ -11,6 +11,8 @@ pub enum Direction {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Command {
     Move(Direction),
+    Pick,
+    Open,
 }
 
 impl Command {
@@ -20,6 +22,8 @@ impl Command {
             Command::Move(Direction::Down) => "move_down".to_string(),
             Command::Move(Direction::Left) => "move_left".to_string(),
             Command::Move(Direction::Right) => "move_right".to_string(),
+            Command::Pick => "pick".to_string(),
+            Command::Open => "open".to_string(),
         }
     }
 
@@ -29,6 +33,8 @@ impl Command {
             "move_down" => Some(Command::Move(Direction::Down)),
             "move_left" => Some(Command::Move(Direction::Left)),
             "move_right" => Some(Command::Move(Direction::Right)),
+            "pick" => Some(Command::Pick),
+            "open" => Some(Command::Open),
             _ => None,
         }
     }
