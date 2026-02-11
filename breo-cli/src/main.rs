@@ -77,6 +77,14 @@ struct Cli {
     #[arg(short, long, num_args = 1.., add = ArgValueCompleter::new(PathCompleter::file()))]
     files: Vec<PathBuf>,
 
+    /// Lima instance name for sandbox (enabled by default)
+    #[arg(short, long, default_value = "default")]
+    sandbox: String,
+
+    /// Disable sandbox mode
+    #[arg(long)]
+    no_sandbox: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -401,6 +409,7 @@ fn build_command(backend: &Backend, prompt: &str, model: Option<&str>) -> Comman
     match backend {
         Backend::Claude => {
             let mut cmd = Command::new("claude");
+            cmd.arg("--dangerously-skip-permissions");
             cmd.arg("--print").arg(prompt);
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
@@ -409,6 +418,7 @@ fn build_command(backend: &Backend, prompt: &str, model: Option<&str>) -> Comman
         }
         Backend::Codex => {
             let mut cmd = Command::new("codex");
+            cmd.arg("--full-auto");
             cmd.arg("exec").arg(prompt);
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
@@ -417,6 +427,7 @@ fn build_command(backend: &Backend, prompt: &str, model: Option<&str>) -> Comman
         }
         Backend::Gemini => {
             let mut cmd = Command::new("gemini");
+            cmd.arg("--yolo");
             cmd.arg("--prompt").arg(prompt);
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
@@ -424,6 +435,56 @@ fn build_command(backend: &Backend, prompt: &str, model: Option<&str>) -> Comman
             cmd
         }
     }
+}
+
+fn build_sandbox_command(
+    sandbox_name: &str,
+    backend: &Backend,
+    prompt: &str,
+    model: Option<&str>,
+) -> Command {
+    let mut cmd = Command::new("limactl");
+    cmd.arg("shell").arg(sandbox_name);
+
+    match backend {
+        Backend::Claude => {
+            cmd.arg("claude")
+                .arg("--dangerously-skip-permissions")
+                .arg("--print")
+                .arg(prompt);
+            if let Some(m) = model {
+                cmd.arg("--model").arg(m);
+            }
+        }
+        Backend::Codex => {
+            cmd.arg("codex").arg("--full-auto").arg("exec").arg(prompt);
+            if let Some(m) = model {
+                cmd.arg("--model").arg(m);
+            }
+        }
+        Backend::Gemini => {
+            cmd.arg("gemini").arg("--yolo").arg("--prompt").arg(prompt);
+            if let Some(m) = model {
+                cmd.arg("--model").arg(m);
+            }
+        }
+    }
+    cmd
+}
+
+fn execute_command(cmd: Command, backend: &Backend) -> (String, String, bool) {
+    let bin = backend_name(backend);
+    let mut cmd = cmd;
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("Failed to run {bin}: {e}");
+            std::process::exit(1);
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    (stdout, stderr, output.status.success())
 }
 
 fn backend_name(backend: &Backend) -> &'static str {
@@ -452,7 +513,7 @@ fn read_attached_files(files: &[PathBuf]) -> String {
     attachments
 }
 
-fn cmd_compact(name: Option<&str>) {
+fn cmd_compact(name: Option<&str>, sandbox: Option<&str>) {
     let active = get_active();
     let name = name.unwrap_or(&active);
     let path = conversation_path(name);
@@ -488,25 +549,20 @@ fn cmd_compact(name: Option<&str>) {
     eprintln!("Compacting '{name}'...");
 
     let backend = Backend::Claude;
-    let output = build_command(&backend, &prompt, None).output();
-
-    let bin = backend_name(&backend);
-    let output = match output {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("Failed to run {bin}: {e}");
-            std::process::exit(1);
-        }
+    let cmd = if let Some(vm) = sandbox {
+        build_sandbox_command(vm, &backend, &prompt, None)
+    } else {
+        build_command(&backend, &prompt, None)
     };
+    let (stdout, stderr, success) = execute_command(cmd, &backend);
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("{bin} exited with {}: {stderr}", output.status);
+    if !success {
+        let bin = backend_name(&backend);
+        eprintln!("{bin} failed: {stderr}");
         std::process::exit(1);
     }
 
-    let summary = String::from_utf8_lossy(&output.stdout);
-    let summary = summary.trim_end();
+    let summary = stdout.trim_end();
 
     let compacted = format!("{summary}\n\n");
     if let Err(e) = fs::write(&path, &compacted) {
@@ -540,6 +596,7 @@ fn cmd_send(
     model: Option<&str>,
     backend: &Backend,
     files: &[PathBuf],
+    sandbox: Option<&str>,
 ) {
     ensure_breo_dir();
     let active = get_active();
@@ -558,25 +615,20 @@ fn cmd_send(
     let attachments = read_attached_files(files);
     let prompt = format!("{existing}## User\n{message}\n{attachments}");
 
-    let output = build_command(backend, &prompt, model).output();
-
-    let bin = backend_name(backend);
-    let output = match output {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("Failed to run {bin}: {e}");
-            std::process::exit(1);
-        }
+    let cmd = if let Some(vm) = sandbox {
+        build_sandbox_command(vm, backend, &prompt, model)
+    } else {
+        build_command(backend, &prompt, model)
     };
+    let (stdout, stderr, success) = execute_command(cmd, backend);
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("{bin} exited with {}: {stderr}", output.status);
+    if !success {
+        let bin = backend_name(backend);
+        eprintln!("{bin} failed: {stderr}");
         std::process::exit(1);
     }
 
-    let response = String::from_utf8_lossy(&output.stdout);
-    let response = response.trim_end();
+    let response = stdout.trim_end();
 
     println!("{response}");
 
@@ -594,19 +646,26 @@ fn main() {
 
     let cli = Cli::parse();
 
+    let sandbox = if cli.no_sandbox {
+        None
+    } else {
+        Some(cli.sandbox.as_str())
+    };
+
     match (cli.message, cli.command) {
         (_, Some(Commands::New { name })) => cmd_new(&name),
         (_, Some(Commands::Switch { name })) => cmd_switch(&name),
         (_, Some(Commands::List)) => cmd_list(),
         (_, Some(Commands::Pick)) => cmd_pick(),
         (_, Some(Commands::Setup { shell })) => cmd_setup(&shell),
-        (_, Some(Commands::Compact { name })) => cmd_compact(name.as_deref()),
+        (_, Some(Commands::Compact { name })) => cmd_compact(name.as_deref(), sandbox),
         (Some(message), None) => cmd_send(
             &message,
             cli.conversation.as_deref(),
             cli.model.as_deref(),
             &cli.agent,
             &cli.files,
+            sandbox,
         ),
         (None, None) => {
             // Try reading from stdin if it's piped
@@ -621,6 +680,7 @@ fn main() {
                         cli.model.as_deref(),
                         &cli.agent,
                         &cli.files,
+                        sandbox,
                     );
                     return;
                 }
