@@ -3,15 +3,40 @@ use clap_complete::engine::{
     ArgValueCandidates, ArgValueCompleter, CompletionCandidate, PathCompleter,
 };
 use clap_complete::env::CompleteEnv;
+use serde::Deserialize;
 use skim::prelude::*;
 use std::fs;
 use std::io::{self, Cursor, IsTerminal, Read as _};
 use std::path::PathBuf;
 use std::process::Command;
 
-const BREO_DIR: &str = ".breo";
-const CONVERSATIONS_DIR: &str = "conversations";
-const ACTIVE_FILE: &str = "active";
+#[derive(Deserialize)]
+#[serde(default)]
+struct Config {
+    sandbox: bool,
+    sandbox_name: String,
+    push: bool,
+    agent: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            sandbox: true,
+            sandbox_name: "default".into(),
+            push: true,
+            agent: "claude".into(),
+        }
+    }
+}
+
+fn load_config() -> Config {
+    let path = breo_dir().join("config.toml");
+    match fs::read_to_string(&path) {
+        Ok(contents) => toml::from_str(&contents).unwrap_or_default(),
+        Err(_) => Config::default(),
+    }
+}
 
 fn list_models() -> Vec<CompletionCandidate> {
     vec![
@@ -31,7 +56,7 @@ fn list_models() -> Vec<CompletionCandidate> {
 }
 
 fn list_conversations() -> Vec<CompletionCandidate> {
-    let dir = PathBuf::from(BREO_DIR).join(CONVERSATIONS_DIR);
+    let dir = conversations_dir();
     let Ok(entries) = fs::read_dir(&dir) else {
         return vec![];
     };
@@ -70,20 +95,24 @@ struct Cli {
     model: Option<String>,
 
     /// Agent to use
-    #[arg(short, long, value_enum, default_value_t = Backend::Claude)]
-    agent: Backend,
+    #[arg(short, long, value_enum)]
+    agent: Option<Backend>,
 
     /// Files to attach to the prompt
     #[arg(short, long, num_args = 1.., add = ArgValueCompleter::new(PathCompleter::file()))]
     files: Vec<PathBuf>,
 
-    /// Lima instance name for sandbox (enabled by default)
-    #[arg(short, long, default_value = "default")]
-    sandbox: String,
+    /// Lima instance name for sandbox
+    #[arg(short, long)]
+    sandbox: Option<String>,
 
     /// Disable sandbox mode
     #[arg(long)]
     no_sandbox: bool,
+
+    /// Disable auto-push after commit
+    #[arg(long)]
+    no_push: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -124,14 +153,17 @@ enum ShellType {
 }
 
 fn breo_dir() -> PathBuf {
-    PathBuf::from(BREO_DIR)
+    dirs::config_dir()
+        .expect("could not determine config directory")
+        .join("breo")
 }
 
 fn conversations_dir() -> PathBuf {
-    breo_dir().join(CONVERSATIONS_DIR)
+    breo_dir().join("conversations")
 }
 
 fn ensure_breo_dir() {
+    let base = breo_dir();
     let conv_dir = conversations_dir();
     if !conv_dir.exists()
         && let Err(e) = fs::create_dir_all(&conv_dir)
@@ -139,10 +171,28 @@ fn ensure_breo_dir() {
         eprintln!("Failed to create {}: {e}", conv_dir.display());
         std::process::exit(1);
     }
+
+    // git init if .git doesn't exist
+    if !base.join(".git").exists() {
+        let _ = Command::new("git")
+            .arg("init")
+            .current_dir(&base)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
+    // Create default config.toml if missing
+    let config_path = base.join("config.toml");
+    if !config_path.exists() {
+        let default_config =
+            "sandbox = true\nsandbox_name = \"default\"\npush = true\nagent = \"claude\"\n";
+        let _ = fs::write(&config_path, default_config);
+    }
 }
 
 fn active_file_path() -> PathBuf {
-    breo_dir().join(ACTIVE_FILE)
+    breo_dir().join("active")
 }
 
 fn get_active() -> String {
@@ -213,15 +263,39 @@ fn format_tokens(tokens: usize) -> String {
     }
 }
 
-fn print_context_summary(content: &str, name: &str, model: Option<&str>, backend: &Backend) {
+fn is_committed(path: &std::path::Path) -> bool {
+    Command::new("git")
+        .arg("diff")
+        .arg("--quiet")
+        .arg("HEAD")
+        .arg("--")
+        .arg(path)
+        .current_dir(breo_dir())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+fn print_context_summary(
+    content: &str,
+    name: &str,
+    model: Option<&str>,
+    backend: &Backend,
+    path: &std::path::Path,
+) {
     let window = context_window(model, backend);
     let exchanges = count_exchanges(content);
     let tokens_used = estimate_tokens(content);
     let tokens_remaining = window.saturating_sub(tokens_used);
     let pct_used = (tokens_used as f64 / window as f64 * 100.0) as usize;
 
+    let dirty = if is_committed(path) {
+        ""
+    } else {
+        " | uncommitted"
+    };
+
     eprintln!(
-        "\n[{name}] {exchanges} exchanges | ~{} tokens used | ~{} remaining ({pct_used}% used)",
+        "\n[{name}] {exchanges} exchanges | ~{} tokens used | ~{} remaining ({pct_used}% used){dirty}",
         format_tokens(tokens_used),
         format_tokens(tokens_remaining),
     );
@@ -513,7 +587,38 @@ fn read_attached_files(files: &[PathBuf]) -> String {
     attachments
 }
 
-fn cmd_compact(name: Option<&str>, sandbox: Option<&str>) {
+fn git_commit_conversation(path: &std::path::Path, message: &str, push: bool) {
+    let base = breo_dir();
+    let status = Command::new("git")
+        .arg("add")
+        .arg(path)
+        .current_dir(&base)
+        .status();
+    if let Ok(s) = status
+        && s.success()
+    {
+        let committed = Command::new("git")
+            .arg("commit")
+            .arg("-m")
+            .arg(message)
+            .current_dir(&base)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+
+        if push && committed {
+            let _ = Command::new("git")
+                .arg("push")
+                .current_dir(&base)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+    }
+}
+
+fn cmd_compact(name: Option<&str>, sandbox: Option<&str>, push: bool) {
     let active = get_active();
     let name = name.unwrap_or(&active);
     let path = conversation_path(name);
@@ -570,6 +675,8 @@ fn cmd_compact(name: Option<&str>, sandbox: Option<&str>) {
         std::process::exit(1);
     }
 
+    git_commit_conversation(&path, &format!("breo: compact '{name}'"), push);
+
     let tokens_after = estimate_tokens(&compacted);
     let saved = tokens_before.saturating_sub(tokens_after);
     let window = context_window(None, &backend);
@@ -597,6 +704,7 @@ fn cmd_send(
     backend: &Backend,
     files: &[PathBuf],
     sandbox: Option<&str>,
+    push: bool,
 ) {
     ensure_breo_dir();
     let active = get_active();
@@ -638,19 +746,35 @@ fn cmd_send(
         std::process::exit(1);
     }
 
-    print_context_summary(&content, name, model, backend);
+    git_commit_conversation(&path, &format!("breo: message to '{name}'"), push);
+
+    print_context_summary(&content, name, model, backend, &path);
 }
 
 fn main() {
     CompleteEnv::with_factory(Cli::command).complete();
 
     let cli = Cli::parse();
+    let config = load_config();
 
-    let sandbox = if cli.no_sandbox {
+    let backend = cli.agent.unwrap_or(match config.agent.as_str() {
+        "codex" => Backend::Codex,
+        "gemini" => Backend::Gemini,
+        _ => Backend::Claude,
+    });
+
+    let sandbox_name: Option<String> = if cli.no_sandbox {
         None
+    } else if let Some(name) = cli.sandbox {
+        Some(name)
+    } else if config.sandbox {
+        Some(config.sandbox_name.clone())
     } else {
-        Some(cli.sandbox.as_str())
+        None
     };
+    let sandbox = sandbox_name.as_deref();
+
+    let push = if cli.no_push { false } else { config.push };
 
     match (cli.message, cli.command) {
         (_, Some(Commands::New { name })) => cmd_new(&name),
@@ -658,14 +782,15 @@ fn main() {
         (_, Some(Commands::List)) => cmd_list(),
         (_, Some(Commands::Pick)) => cmd_pick(),
         (_, Some(Commands::Setup { shell })) => cmd_setup(&shell),
-        (_, Some(Commands::Compact { name })) => cmd_compact(name.as_deref(), sandbox),
+        (_, Some(Commands::Compact { name })) => cmd_compact(name.as_deref(), sandbox, push),
         (Some(message), None) => cmd_send(
             &message,
             cli.conversation.as_deref(),
             cli.model.as_deref(),
-            &cli.agent,
+            &backend,
             &cli.files,
             sandbox,
+            push,
         ),
         (None, None) => {
             // Try reading from stdin if it's piped
@@ -678,9 +803,10 @@ fn main() {
                         input,
                         cli.conversation.as_deref(),
                         cli.model.as_deref(),
-                        &cli.agent,
+                        &backend,
                         &cli.files,
                         sandbox,
+                        push,
                     );
                     return;
                 }
