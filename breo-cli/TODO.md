@@ -4,7 +4,7 @@
 - [x] Compaction
 - [x] It should work with gemini
 - [x] Sandboxing with LimaVM
-- [ ] git integration
+- [x] git integration
 - [ ] Z behaviour to navigate conversations
 - [ ] Sandboxing with <https://github.com/boxlite-ai/boxlite>
 - [ ] Install via curl and cargo binary?

@@ -3,8 +3,9 @@ use clap_complete::engine::{
     ArgValueCandidates, ArgValueCompleter, CompletionCandidate, PathCompleter,
 };
 use clap_complete::env::CompleteEnv;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use skim::prelude::*;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Cursor, IsTerminal, Read as _};
 use std::path::PathBuf;
@@ -36,6 +37,52 @@ fn load_config() -> Config {
         Ok(contents) => toml::from_str(&contents).unwrap_or_default(),
         Err(_) => Config::default(),
     }
+}
+
+#[derive(Serialize, Deserialize, Default, Clone)]
+struct DirState {
+    conversation: Option<String>,
+    agent: Option<String>,
+    sandbox: Option<String>,
+}
+
+fn state_file_path() -> PathBuf {
+    breo_dir().join("state.toml")
+}
+
+fn current_dir_key() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+fn load_all_state() -> HashMap<String, DirState> {
+    let path = state_file_path();
+    match fs::read_to_string(&path) {
+        Ok(contents) => toml::from_str(&contents).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn save_all_state(map: &HashMap<String, DirState>) {
+    let path = state_file_path();
+    if let Ok(contents) = toml::to_string(map) {
+        let _ = fs::write(&path, contents);
+    }
+}
+
+fn load_dir_state() -> DirState {
+    let key = current_dir_key();
+    load_all_state().remove(&key).unwrap_or_default()
+}
+
+fn save_dir_state(state: &DirState) {
+    let key = current_dir_key();
+    let mut map = load_all_state();
+    map.insert(key, state.clone());
+    save_all_state(&map);
 }
 
 fn list_models() -> Vec<CompletionCandidate> {
@@ -122,11 +169,6 @@ struct Cli {
 enum Commands {
     /// Create a new conversation and switch to it
     New { name: String },
-    /// Switch to an existing conversation
-    Switch {
-        #[arg(add = ArgValueCandidates::new(list_conversations))]
-        name: String,
-    },
     /// List all conversations
     List,
     /// Fuzzy-pick a conversation (for shell integration)
@@ -137,6 +179,8 @@ enum Commands {
         #[arg(value_enum)]
         shell: ShellType,
     },
+    /// Show active conversation, agent, and sandbox for the current directory
+    Status,
     /// Compact a conversation by summarizing it to save context
     Compact {
         /// Conversation to compact (defaults to active)
@@ -191,28 +235,16 @@ fn ensure_breo_dir() {
     }
 }
 
-fn active_file_path() -> PathBuf {
-    breo_dir().join("active")
-}
-
 fn get_active() -> String {
-    let path = active_file_path();
-    if path.exists() {
-        fs::read_to_string(&path)
-            .unwrap_or_else(|_| "default".into())
-            .trim()
-            .to_string()
-    } else {
-        "default".into()
-    }
+    load_dir_state()
+        .conversation
+        .unwrap_or_else(|| "default".into())
 }
 
 fn set_active(name: &str) {
-    let path = active_file_path();
-    if let Err(e) = fs::write(&path, name) {
-        eprintln!("Failed to write {}: {e}", path.display());
-        std::process::exit(1);
-    }
+    let mut state = load_dir_state();
+    state.conversation = Some(name.to_string());
+    save_dir_state(&state);
 }
 
 fn conversation_path(name: &str) -> PathBuf {
@@ -301,7 +333,7 @@ fn print_context_summary(
     );
 }
 
-fn cmd_new(name: &str) {
+fn cmd_new(name: &str, push: bool) {
     ensure_breo_dir();
     let path = conversation_path(name);
     if path.exists() {
@@ -314,6 +346,7 @@ fn cmd_new(name: &str) {
         std::process::exit(1);
     }
     set_active(name);
+    git_commit_state(push);
     println!("Created and switched to conversation: {name}");
 }
 
@@ -374,16 +407,6 @@ fn cmd_pick() {
     }
 }
 
-fn cmd_switch(name: &str) {
-    let path = conversation_path(name);
-    if !path.exists() {
-        eprintln!("Conversation '{name}' does not exist");
-        std::process::exit(1);
-    }
-    set_active(name);
-    println!("Switched to conversation: {name}");
-}
-
 fn cmd_list() {
     let dir = conversations_dir();
     if !dir.exists() {
@@ -418,6 +441,17 @@ fn cmd_list() {
     }
 }
 
+fn cmd_status() {
+    let state = load_dir_state();
+    let conversation = state.conversation.as_deref().unwrap_or("default");
+    let agent = state.agent.as_deref().unwrap_or("(not set)");
+    let sandbox = state.sandbox.as_deref().unwrap_or("(not set)");
+    println!("directory:    {}", current_dir_key());
+    println!("conversation: {conversation}");
+    println!("agent:        {agent}");
+    println!("sandbox:      {sandbox}");
+}
+
 fn cmd_setup(shell: &ShellType) {
     let script = match shell {
         ShellType::Bash => {
@@ -430,7 +464,7 @@ _breo_with_pick() {
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     if [[ "$prev" == "-c" || "$prev" == "--conversation" ]] || \
-       [[ ("${COMP_WORDS[1]}" == "switch" || "${COMP_WORDS[1]}" == "compact") && $COMP_CWORD -eq 2 ]]; then
+       [[ "${COMP_WORDS[1]}" == "compact" && $COMP_CWORD -eq 2 ]]; then
         local pick
         pick=$(breo pick </dev/tty 2>/dev/tty)
         if [[ -n "$pick" ]]; then
@@ -451,7 +485,7 @@ source <(COMPLETE=zsh breo)
 # 2. Override with our skim-powered wrapper
 _breo_with_pick() {
     if [[ "${words[-2]}" == "-c" || "${words[-2]}" == "--conversation" ]] || \
-       [[ ("${words[2]}" == "switch" || "${words[2]}" == "compact") && $CURRENT -eq 3 ]]; then
+       [[ "${words[2]}" == "compact" && $CURRENT -eq 3 ]]; then
         local pick
         pick=$(breo pick </dev/tty 2>/dev/tty)
         if [[ -n "$pick" ]]; then
@@ -472,7 +506,6 @@ function __breo_pick_conversation
 end
 
 complete -c breo -l conversation -s c -x -a '(__breo_pick_conversation)'
-complete -c breo -n '__fish_seen_subcommand_from switch' -x -a '(__breo_pick_conversation)'
 complete -c breo -n '__fish_seen_subcommand_from compact' -x -a '(__breo_pick_conversation)'"#
         }
     };
@@ -618,6 +651,38 @@ fn git_commit_conversation(path: &std::path::Path, message: &str, push: bool) {
     }
 }
 
+fn git_commit_state(push: bool) {
+    let base = breo_dir();
+    let path = state_file_path();
+    let status = Command::new("git")
+        .arg("add")
+        .arg(&path)
+        .current_dir(&base)
+        .status();
+    if let Ok(s) = status
+        && s.success()
+    {
+        let committed = Command::new("git")
+            .arg("commit")
+            .arg("-m")
+            .arg("breo: update state")
+            .current_dir(&base)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+
+        if push && committed {
+            let _ = Command::new("git")
+                .arg("push")
+                .current_dir(&base)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+    }
+}
+
 fn cmd_compact(name: Option<&str>, sandbox: Option<&str>, push: bool) {
     let active = get_active();
     let name = name.unwrap_or(&active);
@@ -705,7 +770,7 @@ fn cmd_send(
     files: &[PathBuf],
     sandbox: Option<&str>,
     push: bool,
-) {
+) -> String {
     ensure_breo_dir();
     let active = get_active();
     let name = target.unwrap_or(&active);
@@ -714,9 +779,6 @@ fn cmd_send(
     let existing = if path.exists() {
         fs::read_to_string(&path).unwrap_or_default()
     } else {
-        if target.is_none() {
-            set_active(name);
-        }
         format!("# Conversation: {name}\n\n")
     };
 
@@ -749,6 +811,8 @@ fn cmd_send(
     git_commit_conversation(&path, &format!("breo: message to '{name}'"), push);
 
     print_context_summary(&content, name, model, backend, &path);
+
+    name.to_string()
 }
 
 fn main() {
@@ -756,17 +820,30 @@ fn main() {
 
     let cli = Cli::parse();
     let config = load_config();
+    let dir_state = load_dir_state();
 
-    let backend = cli.agent.unwrap_or(match config.agent.as_str() {
-        "codex" => Backend::Codex,
-        "gemini" => Backend::Gemini,
-        _ => Backend::Claude,
+    let backend = cli.agent.unwrap_or_else(|| {
+        if let Some(ref a) = dir_state.agent {
+            match a.as_str() {
+                "codex" => return Backend::Codex,
+                "gemini" => return Backend::Gemini,
+                "claude" => return Backend::Claude,
+                _ => {}
+            }
+        }
+        match config.agent.as_str() {
+            "codex" => Backend::Codex,
+            "gemini" => Backend::Gemini,
+            _ => Backend::Claude,
+        }
     });
 
     let sandbox_name: Option<String> = if cli.no_sandbox {
         None
     } else if let Some(name) = cli.sandbox {
         Some(name)
+    } else if let Some(ref name) = dir_state.sandbox {
+        Some(name.clone())
     } else if config.sandbox {
         Some(config.sandbox_name.clone())
     } else {
@@ -776,22 +853,34 @@ fn main() {
 
     let push = if cli.no_push { false } else { config.push };
 
+    let save_after_send = |conversation: &str| {
+        save_dir_state(&DirState {
+            conversation: Some(conversation.to_string()),
+            agent: Some(backend_name(&backend).to_string()),
+            sandbox: sandbox.map(String::from),
+        });
+        git_commit_state(push);
+    };
+
     match (cli.message, cli.command) {
-        (_, Some(Commands::New { name })) => cmd_new(&name),
-        (_, Some(Commands::Switch { name })) => cmd_switch(&name),
+        (_, Some(Commands::New { name })) => cmd_new(&name, push),
         (_, Some(Commands::List)) => cmd_list(),
         (_, Some(Commands::Pick)) => cmd_pick(),
+        (_, Some(Commands::Status)) => cmd_status(),
         (_, Some(Commands::Setup { shell })) => cmd_setup(&shell),
         (_, Some(Commands::Compact { name })) => cmd_compact(name.as_deref(), sandbox, push),
-        (Some(message), None) => cmd_send(
-            &message,
-            cli.conversation.as_deref(),
-            cli.model.as_deref(),
-            &backend,
-            &cli.files,
-            sandbox,
-            push,
-        ),
+        (Some(message), None) => {
+            let name = cmd_send(
+                &message,
+                cli.conversation.as_deref(),
+                cli.model.as_deref(),
+                &backend,
+                &cli.files,
+                sandbox,
+                push,
+            );
+            save_after_send(&name);
+        }
         (None, None) => {
             // Try reading from stdin if it's piped
             if !io::stdin().is_terminal() {
@@ -799,7 +888,7 @@ fn main() {
                 io::stdin().read_to_string(&mut input).unwrap_or_default();
                 let input = input.trim();
                 if !input.is_empty() {
-                    cmd_send(
+                    let name = cmd_send(
                         input,
                         cli.conversation.as_deref(),
                         cli.model.as_deref(),
@@ -808,6 +897,7 @@ fn main() {
                         sandbox,
                         push,
                     );
+                    save_after_send(&name);
                     return;
                 }
             }
