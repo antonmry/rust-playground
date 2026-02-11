@@ -1,0 +1,9 @@
+[package]
+name = "breo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+clap_complete = { version = "4", features = ["unstable-dynamic"] }
+skim = { version = "2.0.2", default-features = false }
