@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use skim::prelude::*;
 use std::collections::HashMap;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{self, Cursor, IsTerminal, Read as _};
 use std::path::PathBuf;
 use std::process::Command;
@@ -44,6 +45,7 @@ struct DirState {
     conversation: Option<String>,
     agent: Option<String>,
     sandbox: Option<String>,
+    dir_id: Option<String>,
 }
 
 fn state_file_path() -> PathBuf {
@@ -103,7 +105,7 @@ fn list_models() -> Vec<CompletionCandidate> {
 }
 
 fn list_conversations() -> Vec<CompletionCandidate> {
-    let dir = conversations_dir();
+    let dir = dir_conversations_dir();
     let Ok(entries) = fs::read_dir(&dir) else {
         return vec![];
     };
@@ -187,6 +189,42 @@ enum Commands {
         #[arg(add = ArgValueCandidates::new(list_conversations))]
         name: Option<String>,
     },
+    /// Run an implement/validate loop until the validator approves
+    Loop {
+        /// Path to the plan file (instructions for the implementer)
+        plan: PathBuf,
+
+        /// Path to the harness file (instructions for the validator)
+        harness: PathBuf,
+
+        /// Agent to use for the implementer
+        #[arg(short, long, value_enum)]
+        agent: Option<Backend>,
+
+        /// Agent for the validator (defaults to same as --agent)
+        #[arg(long, value_enum)]
+        review_agent: Option<Backend>,
+
+        /// Model for the validator (defaults to same as --model)
+        #[arg(long, add = ArgValueCandidates::new(list_models))]
+        review_model: Option<String>,
+
+        /// Send to a specific conversation
+        #[arg(short, long, add = ArgValueCandidates::new(list_conversations))]
+        conversation: Option<String>,
+
+        /// Files to attach to the implementer prompt
+        #[arg(short, long, num_args = 1.., add = ArgValueCompleter::new(PathCompleter::file()))]
+        files: Vec<PathBuf>,
+
+        /// Lima instance name for sandbox
+        #[arg(short, long)]
+        sandbox: Option<String>,
+
+        /// Disable sandbox mode
+        #[arg(long)]
+        no_sandbox: bool,
+    },
 }
 
 #[derive(Clone, ValueEnum)]
@@ -197,8 +235,9 @@ enum ShellType {
 }
 
 fn breo_dir() -> PathBuf {
-    dirs::config_dir()
-        .expect("could not determine config directory")
+    dirs::home_dir()
+        .expect("could not determine home directory")
+        .join(".config")
         .join("breo")
 }
 
@@ -215,6 +254,8 @@ fn ensure_breo_dir() {
         eprintln!("Failed to create {}: {e}", conv_dir.display());
         std::process::exit(1);
     }
+
+    ensure_dir_conversations_dir();
 
     // git init if .git doesn't exist
     if !base.join(".git").exists() {
@@ -236,9 +277,34 @@ fn ensure_breo_dir() {
 }
 
 fn get_active() -> String {
-    load_dir_state()
-        .conversation
-        .unwrap_or_else(|| "default".into())
+    let state = load_dir_state();
+
+    // 1. If explicitly set in state, use it (with lazy migration)
+    if let Some(ref name) = state.conversation {
+        let scoped = dir_conversations_dir().join(format!("{name}.md"));
+        if scoped.exists() {
+            return name.clone();
+        }
+        // Lazy migration: check old flat location
+        let flat = conversations_dir().join(format!("{name}.md"));
+        if flat.exists() {
+            ensure_dir_conversations_dir();
+            let _ = fs::copy(&flat, &scoped);
+            return name.clone();
+        }
+        // Name set but file doesn't exist anywhere — fall through
+    }
+
+    // 2. Resume the latest conversation in this dir's subfolder
+    let dir = dir_conversations_dir();
+    if dir.exists()
+        && let Some(latest) = find_latest_conversation(&dir)
+    {
+        return latest;
+    }
+
+    // 3. Auto-create a timestamped name (file created lazily by cmd_send)
+    generate_timestamp_name()
 }
 
 fn set_active(name: &str) {
@@ -247,8 +313,88 @@ fn set_active(name: &str) {
     save_dir_state(&state);
 }
 
+fn get_or_create_dir_id() -> String {
+    let mut state = load_dir_state();
+    if let Some(ref id) = state.dir_id {
+        return id.clone();
+    }
+    let key = current_dir_key();
+    let basename = std::path::Path::new(&key)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "default".into());
+
+    // Sanitize: keep alphanumeric, dash, underscore, dot
+    let sanitized: String = basename
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+
+    let conv_dir = conversations_dir();
+    let candidate = conv_dir.join(&sanitized);
+
+    let id = if !candidate.exists() {
+        sanitized
+    } else {
+        // Check if existing dir points to the same path
+        let marker = candidate.join("_dir.txt");
+        let existing_path = fs::read_to_string(&marker).unwrap_or_default();
+        if existing_path.trim() == key {
+            sanitized
+        } else {
+            // Collision: append short hash
+            let mut hasher = std::hash::DefaultHasher::new();
+            key.hash(&mut hasher);
+            format!("{}-{:08x}", sanitized, hasher.finish() as u32)
+        }
+    };
+
+    state.dir_id = Some(id.clone());
+    save_dir_state(&state);
+    id
+}
+
+fn dir_conversations_dir() -> PathBuf {
+    conversations_dir().join(get_or_create_dir_id())
+}
+
+fn ensure_dir_conversations_dir() {
+    let dir = dir_conversations_dir();
+    if !dir.exists() {
+        if let Err(e) = fs::create_dir_all(&dir) {
+            eprintln!("Failed to create {}: {e}", dir.display());
+            std::process::exit(1);
+        }
+        let marker = dir.join("_dir.txt");
+        let _ = fs::write(&marker, current_dir_key());
+    }
+}
+
+fn generate_timestamp_name() -> String {
+    chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string()
+}
+
+fn find_latest_conversation(dir: &std::path::Path) -> Option<String> {
+    let entries = fs::read_dir(dir).ok()?;
+    let mut names: Vec<String> = entries
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().to_string_lossy().to_string();
+            let name = name.strip_suffix(".md")?;
+            Some(name.to_string())
+        })
+        .collect();
+    names.sort();
+    names.pop()
+}
+
 fn conversation_path(name: &str) -> PathBuf {
-    conversations_dir().join(format!("{name}.md"))
+    dir_conversations_dir().join(format!("{name}.md"))
 }
 
 fn context_window(model: Option<&str>, backend: &Backend) -> usize {
@@ -351,7 +497,7 @@ fn cmd_new(name: &str, push: bool) {
 }
 
 fn cmd_pick() {
-    let dir = conversations_dir();
+    let dir = dir_conversations_dir();
     if !dir.exists() {
         std::process::exit(1);
     }
@@ -408,7 +554,7 @@ fn cmd_pick() {
 }
 
 fn cmd_list() {
-    let dir = conversations_dir();
+    let dir = dir_conversations_dir();
     if !dir.exists() {
         println!("No conversations yet.");
         return;
@@ -442,12 +588,14 @@ fn cmd_list() {
 }
 
 fn cmd_status() {
+    let active = get_active();
     let state = load_dir_state();
-    let conversation = state.conversation.as_deref().unwrap_or("default");
     let agent = state.agent.as_deref().unwrap_or("(not set)");
     let sandbox = state.sandbox.as_deref().unwrap_or("(not set)");
     println!("directory:    {}", current_dir_key());
-    println!("conversation: {conversation}");
+    println!("config:       {}", breo_dir().display());
+    println!("conversations:{}", dir_conversations_dir().display());
+    println!("conversation: {active}");
     println!("agent:        {agent}");
     println!("sandbox:      {sandbox}");
 }
@@ -512,12 +660,12 @@ complete -c breo -n '__fish_seen_subcommand_from compact' -x -a '(__breo_pick_co
     println!("{script}");
 }
 
-fn build_command(backend: &Backend, prompt: &str, model: Option<&str>) -> Command {
+fn build_command(backend: &Backend, model: Option<&str>) -> Command {
     match backend {
         Backend::Claude => {
             let mut cmd = Command::new("claude");
             cmd.arg("--dangerously-skip-permissions");
-            cmd.arg("--print").arg(prompt);
+            cmd.arg("--print");
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
             }
@@ -525,8 +673,7 @@ fn build_command(backend: &Backend, prompt: &str, model: Option<&str>) -> Comman
         }
         Backend::Codex => {
             let mut cmd = Command::new("codex");
-            cmd.arg("--full-auto");
-            cmd.arg("exec").arg(prompt);
+            cmd.arg("exec").arg("--full-auto");
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
             }
@@ -535,7 +682,6 @@ fn build_command(backend: &Backend, prompt: &str, model: Option<&str>) -> Comman
         Backend::Gemini => {
             let mut cmd = Command::new("gemini");
             cmd.arg("--yolo");
-            cmd.arg("--prompt").arg(prompt);
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
             }
@@ -544,12 +690,39 @@ fn build_command(backend: &Backend, prompt: &str, model: Option<&str>) -> Comman
     }
 }
 
-fn build_sandbox_command(
-    sandbox_name: &str,
-    backend: &Backend,
-    prompt: &str,
-    model: Option<&str>,
-) -> Command {
+fn check_sandbox(name: &str) {
+    match Command::new("limactl")
+        .arg("list")
+        .arg("--format={{.Name}}")
+        .output()
+    {
+        Err(_) => {
+            eprintln!(
+                "Sandbox '{name}' requires Lima but 'limactl' was not found.\n\
+                 Install Lima (https://lima-vm.io) or use --no-sandbox."
+            );
+            std::process::exit(1);
+        }
+        Ok(output) => {
+            let vms = String::from_utf8_lossy(&output.stdout);
+            if !vms.lines().any(|line| line.trim() == name) {
+                eprintln!(
+                    "Lima VM '{name}' not found.\n\
+                     Available VMs: {}\n\
+                     Create it with 'limactl start {name}' or use --no-sandbox.",
+                    if vms.trim().is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        vms.lines().map(|l| l.trim()).collect::<Vec<_>>().join(", ")
+                    }
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn build_sandbox_command(sandbox_name: &str, backend: &Backend, model: Option<&str>) -> Command {
     let mut cmd = Command::new("limactl");
     cmd.arg("shell").arg(sandbox_name);
 
@@ -557,20 +730,19 @@ fn build_sandbox_command(
         Backend::Claude => {
             cmd.arg("claude")
                 .arg("--dangerously-skip-permissions")
-                .arg("--print")
-                .arg(prompt);
+                .arg("--print");
             if let Some(m) = model {
                 cmd.arg("--model").arg(m);
             }
         }
         Backend::Codex => {
-            cmd.arg("codex").arg("--full-auto").arg("exec").arg(prompt);
+            cmd.arg("codex").arg("exec").arg("--full-auto");
             if let Some(m) = model {
                 cmd.arg("--model").arg(m);
             }
         }
         Backend::Gemini => {
-            cmd.arg("gemini").arg("--yolo").arg("--prompt").arg(prompt);
+            cmd.arg("gemini").arg("--yolo");
             if let Some(m) = model {
                 cmd.arg("--model").arg(m);
             }
@@ -579,19 +751,86 @@ fn build_sandbox_command(
     cmd
 }
 
-fn execute_command(cmd: Command, backend: &Backend) -> (String, String, bool) {
-    let bin = backend_name(backend);
+fn execute_command_inner(
+    cmd: Command,
+    prompt: &str,
+    sandboxed: bool,
+    backend: &Backend,
+    stream: bool,
+) -> (String, String, bool) {
+    let bin = if sandboxed {
+        "limactl"
+    } else {
+        backend_name(backend)
+    };
     let mut cmd = cmd;
-    let output = match cmd.output() {
-        Ok(o) => o,
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::inherit());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to run {bin}: {e}");
             std::process::exit(1);
         }
     };
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    (stdout, stderr, output.status.success())
+
+    // Write prompt to stdin, then close it
+    if let Some(mut stdin) = child.stdin.take() {
+        use io::Write;
+        let _ = stdin.write_all(prompt.as_bytes());
+        // stdin is dropped here, closing the pipe
+    }
+
+    let mut stdout_buf = String::new();
+    if let Some(pipe) = child.stdout.take() {
+        let reader = io::BufReader::new(pipe);
+        use io::BufRead;
+        for line in reader.lines() {
+            match line {
+                Ok(l) => {
+                    if stream {
+                        println!("{l}");
+                    }
+                    stdout_buf.push_str(&l);
+                    stdout_buf.push('\n');
+                }
+                Err(e) => {
+                    eprintln!("Error reading {bin} stdout: {e}");
+                    break;
+                }
+            }
+        }
+    }
+
+    let status = match child.wait() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to wait for {bin}: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    (stdout_buf, String::new(), status.success())
+}
+
+fn execute_command(
+    cmd: Command,
+    prompt: &str,
+    sandboxed: bool,
+    backend: &Backend,
+) -> (String, String, bool) {
+    execute_command_inner(cmd, prompt, sandboxed, backend, true)
+}
+
+fn execute_command_quiet(
+    cmd: Command,
+    prompt: &str,
+    sandboxed: bool,
+    backend: &Backend,
+) -> (String, String, bool) {
+    execute_command_inner(cmd, prompt, sandboxed, backend, false)
 }
 
 fn backend_name(backend: &Backend) -> &'static str {
@@ -720,15 +959,20 @@ fn cmd_compact(name: Option<&str>, sandbox: Option<&str>, push: bool) {
 
     let backend = Backend::Claude;
     let cmd = if let Some(vm) = sandbox {
-        build_sandbox_command(vm, &backend, &prompt, None)
+        check_sandbox(vm);
+        build_sandbox_command(vm, &backend, None)
     } else {
-        build_command(&backend, &prompt, None)
+        build_command(&backend, None)
     };
-    let (stdout, stderr, success) = execute_command(cmd, &backend);
+    let (stdout, stderr, success) = execute_command(cmd, &prompt, sandbox.is_some(), &backend);
 
     if !success {
-        let bin = backend_name(&backend);
-        eprintln!("{bin} failed: {stderr}");
+        let label = if sandbox.is_some() {
+            "limactl"
+        } else {
+            backend_name(&backend)
+        };
+        eprintln!("{label} failed: {stderr}");
         std::process::exit(1);
     }
 
@@ -762,6 +1006,37 @@ fn cmd_compact(name: Option<&str>, sandbox: Option<&str>, push: bool) {
     );
 }
 
+enum ReviewVerdict {
+    Success,
+    Retry(String),
+}
+
+fn parse_review(response: &str) -> ReviewVerdict {
+    let upper = response.to_uppercase();
+    if upper.contains("VERDICT: SUCCESS") {
+        return ReviewVerdict::Success;
+    }
+    if upper.contains("VERDICT: RETRY") {
+        // Extract feedback after FEEDBACK: (case-insensitive search)
+        if let Some(pos) = upper.find("FEEDBACK:") {
+            let feedback = response[pos + "FEEDBACK:".len()..].trim().to_string();
+            return ReviewVerdict::Retry(feedback);
+        }
+        return ReviewVerdict::Retry(response.to_string());
+    }
+    // Fallback: treat as retry with full response
+    ReviewVerdict::Retry(response.to_string())
+}
+
+fn truncate_display(s: &str, max: usize) -> String {
+    let first_line = s.lines().next().unwrap_or(s);
+    if first_line.len() > max {
+        format!("{}...", &first_line[..max])
+    } else {
+        first_line.to_string()
+    }
+}
+
 fn cmd_send(
     message: &str,
     target: Option<&str>,
@@ -786,21 +1061,24 @@ fn cmd_send(
     let prompt = format!("{existing}## User\n{message}\n{attachments}");
 
     let cmd = if let Some(vm) = sandbox {
-        build_sandbox_command(vm, backend, &prompt, model)
+        check_sandbox(vm);
+        build_sandbox_command(vm, backend, model)
     } else {
-        build_command(backend, &prompt, model)
+        build_command(backend, model)
     };
-    let (stdout, stderr, success) = execute_command(cmd, backend);
+    let (stdout, stderr, success) = execute_command(cmd, &prompt, sandbox.is_some(), backend);
 
     if !success {
-        let bin = backend_name(backend);
-        eprintln!("{bin} failed: {stderr}");
+        let label = if sandbox.is_some() {
+            "limactl"
+        } else {
+            backend_name(backend)
+        };
+        eprintln!("{label} failed: {stderr}");
         std::process::exit(1);
     }
 
     let response = stdout.trim_end();
-
-    println!("{response}");
 
     let content = format!("{prompt}\n## Assistant\n{response}\n\n");
     if let Err(e) = fs::write(&path, &content) {
@@ -813,6 +1091,162 @@ fn cmd_send(
     print_context_summary(&content, name, model, backend, &path);
 
     name.to_string()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_loop(
+    plan_path: &std::path::Path,
+    harness_path: &std::path::Path,
+    target: Option<&str>,
+    model: Option<&str>,
+    backend: &Backend,
+    review_model: Option<&str>,
+    review_backend: &Backend,
+    files: &[PathBuf],
+    sandbox: Option<&str>,
+    push: bool,
+) -> String {
+    // Validate that plan and harness files are readable
+    if let Err(e) = fs::metadata(plan_path) {
+        eprintln!("Failed to read plan file {}: {e}", plan_path.display());
+        std::process::exit(1);
+    }
+    if let Err(e) = fs::metadata(harness_path) {
+        eprintln!(
+            "Failed to read harness file {}: {e}",
+            harness_path.display()
+        );
+        std::process::exit(1);
+    }
+
+    // Initialize RESULT.md in the working directory
+    let result_path = std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("RESULT.md");
+    let result_initial = "# Result\n\n## Progress\n";
+    if let Err(e) = fs::write(&result_path, result_initial) {
+        eprintln!("Failed to create RESULT.md: {e}");
+        std::process::exit(1);
+    }
+
+    eprintln!(
+        "[loop] Plan: {} | Harness: {}",
+        plan_path.display(),
+        harness_path.display()
+    );
+    eprintln!("[loop] Result: RESULT.md");
+    eprintln!(
+        "[loop] Implementer: {} | Validator: {}",
+        backend_name(backend),
+        backend_name(review_backend)
+    );
+    eprintln!("[loop] Press Ctrl-C to stop at any time\n");
+
+    // Build file references for extra attached files
+    let file_refs = if files.is_empty() {
+        String::new()
+    } else {
+        let paths: Vec<_> = files
+            .iter()
+            .map(|f| format!("  - {}", f.display()))
+            .collect();
+        format!("\nAlso read these reference files:\n{}\n", paths.join("\n"))
+    };
+
+    let result_instructions = "\n\nAfter completing your work, update RESULT.md with:\n\
+         - A summary of changes made under a \"### Attempt N\" heading\n\
+         - Files modified and why\n\
+         - Any issues encountered and how they were resolved\n\
+         - Lessons learned";
+
+    // Attempt 1: send a short message referencing files (agent reads them from disk)
+    eprintln!("[loop] === Attempt 1 ===");
+    let first_message = format!(
+        "Read the implementation plan from {} and follow the instructions.\n\
+         {file_refs}{result_instructions}",
+        plan_path.display()
+    );
+    let name = cmd_send(&first_message, target, model, backend, &[], sandbox, push);
+
+    let mut iteration = 1;
+    loop {
+        eprintln!("\n[loop] Reviewing attempt {iteration}...");
+
+        // Build and execute review via cmd_send to the reviewer
+        let review_message = format!(
+            "You are a validator reviewing an implementation attempt.\n\n\
+             Read the acceptance criteria from {}.\n\
+             Read RESULT.md for the implementation progress.\n\n\
+             Review the implementation against the criteria.\n\
+             After your review, update RESULT.md by appending under the current attempt:\n\
+             - Your verdict (SUCCESS or RETRY)\n\
+             - Specific feedback on what was done well and what needs fixing\n\
+             - Concrete instructions for the next attempt (if RETRY)\n\n\
+             Then respond with:\n\
+             - VERDICT: SUCCESS (if all criteria met)\n\
+             - VERDICT: RETRY + FEEDBACK: ... (if not)\n\n\
+             Only return SUCCESS if the harness criteria are completely satisfied.",
+            harness_path.display()
+        );
+
+        let cmd = if let Some(vm) = sandbox {
+            build_sandbox_command(vm, review_backend, review_model)
+        } else {
+            build_command(review_backend, review_model)
+        };
+        let (stdout, stderr, success) =
+            execute_command_quiet(cmd, &review_message, sandbox.is_some(), review_backend);
+
+        if !success {
+            let label = if sandbox.is_some() {
+                "limactl"
+            } else {
+                backend_name(review_backend)
+            };
+            eprintln!("{label} failed during review: {stderr}");
+            eprintln!("[loop] Stopping due to review error. Conversation: {name}");
+            return name;
+        }
+
+        let response = stdout.trim();
+        match parse_review(response) {
+            ReviewVerdict::Success => {
+                // Append final status to RESULT.md
+                let final_status = format!(
+                    "\n## Final Status\nCompleted successfully after {iteration} attempt(s).\n"
+                );
+                if let Ok(mut f) = fs::OpenOptions::new().append(true).open(&result_path) {
+                    use io::Write;
+                    let _ = f.write_all(final_status.as_bytes());
+                }
+                eprintln!("[loop] === SUCCESS after {} attempt(s) ===", iteration);
+                return name;
+            }
+            ReviewVerdict::Retry(feedback) => {
+                eprintln!("[loop] Verdict: RETRY");
+                eprintln!("[loop] Feedback: {}", truncate_display(&feedback, 120));
+
+                iteration += 1;
+                let retry_message = format!(
+                    "Read the implementation plan from {}.\n\
+                     Check RESULT.md for validator feedback on previous attempts and address it.\n\
+                     {result_instructions}",
+                    plan_path.display()
+                );
+
+                eprintln!("\n[loop] === Attempt {iteration} ===");
+                cmd_send(
+                    &retry_message,
+                    Some(&name),
+                    model,
+                    backend,
+                    &[],
+                    sandbox,
+                    push,
+                );
+            }
+        }
+    }
 }
 
 fn main() {
@@ -854,11 +1288,11 @@ fn main() {
     let push = if cli.no_push { false } else { config.push };
 
     let save_after_send = |conversation: &str| {
-        save_dir_state(&DirState {
-            conversation: Some(conversation.to_string()),
-            agent: Some(backend_name(&backend).to_string()),
-            sandbox: sandbox.map(String::from),
-        });
+        let mut state = load_dir_state();
+        state.conversation = Some(conversation.to_string());
+        state.agent = Some(backend_name(&backend).to_string());
+        state.sandbox = sandbox.map(String::from);
+        save_dir_state(&state);
         git_commit_state(push);
     };
 
@@ -869,6 +1303,49 @@ fn main() {
         (_, Some(Commands::Status)) => cmd_status(),
         (_, Some(Commands::Setup { shell })) => cmd_setup(&shell),
         (_, Some(Commands::Compact { name })) => cmd_compact(name.as_deref(), sandbox, push),
+        (
+            _,
+            Some(Commands::Loop {
+                plan,
+                harness,
+                agent: loop_agent,
+                review_agent,
+                review_model,
+                conversation,
+                files,
+                sandbox: loop_sandbox,
+                no_sandbox: loop_no_sandbox,
+            }),
+        ) => {
+            // Resolve sandbox from loop-specific flags, falling back to global config
+            let loop_sandbox_name: Option<String> = if loop_no_sandbox {
+                None
+            } else if let Some(name) = loop_sandbox {
+                Some(name)
+            } else {
+                sandbox_name.clone()
+            };
+            let loop_sandbox_ref = loop_sandbox_name.as_deref();
+
+            let impl_be = loop_agent.unwrap_or_else(|| backend.clone());
+            let model_ref = cli.model.as_deref();
+            let review_model_ref = review_model.as_deref().or(model_ref);
+            let review_be = review_agent.unwrap_or_else(|| impl_be.clone());
+            let target = conversation.as_deref().or(cli.conversation.as_deref());
+            let name = cmd_loop(
+                &plan,
+                &harness,
+                target,
+                model_ref,
+                &impl_be,
+                review_model_ref,
+                &review_be,
+                &files,
+                loop_sandbox_ref,
+                push,
+            );
+            save_after_send(&name);
+        }
         (Some(message), None) => {
             let name = cmd_send(
                 &message,
