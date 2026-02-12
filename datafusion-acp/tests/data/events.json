@@ -1,0 +1,3 @@
+{"ts":"2024-01-15T10:00:00Z","event":"click","user":"alice"}
+{"ts":"2024-01-15T10:05:00Z","event":"purchase","user":"bob"}
+{"ts":"2024-01-15T10:10:00Z","event":"click","user":"alice"}
