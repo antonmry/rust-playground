@@ -859,11 +859,12 @@ fn read_attached_files(files: &[PathBuf]) -> String {
     attachments
 }
 
-fn git_commit_conversation(path: &std::path::Path, message: &str, push: bool) {
+fn git_commit_conversation(_path: &std::path::Path, message: &str, push: bool) {
     let base = breo_dir();
     let status = Command::new("git")
         .arg("add")
-        .arg(path)
+        .arg("-A")
+        .arg("conversations/")
         .current_dir(&base)
         .status();
     if let Ok(s) = status
