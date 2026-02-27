@@ -1,17 +1,21 @@
 Using: /Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/target/release/faq_cli
 ========================================
-Detected backends: hash nomic-embed-text-v2-moe.Q4_K_M
+Detected backends: hash nomic-embed-text-v2-moe.Q4_K_M all-MiniLM-L6-v2 pplx-embed-v1-0.6b
 
 === Building indexes ===
   Building index for 'hash' ... model=hash indexed_entries=8 output=/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/bench/index_hash.jsonl
 done (/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/bench/index_hash.jsonl)
-  Building index for 'nomic-embed-text-v2-moe.Q4_K_M' ... model=/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/models/nomic-embed-text-v2-moe.Q4_K_M.gguf indexed_entries=8 output=/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/bench/index_nomic-embed-text-v2-moe.Q4_K_M.jsonl
+  Building index for 'nomic-embed-text-v2-moe.Q4_K_M' ... model=nomic-embed-text-v2-moe.Q4_K_M.gguf indexed_entries=8 output=/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/bench/index_nomic-embed-text-v2-moe.Q4_K_M.jsonl
 done (/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/bench/index_nomic-embed-text-v2-moe.Q4_K_M.jsonl)
+  Building index for 'all-MiniLM-L6-v2' ... model=all-MiniLM-L6-v2.safetensors indexed_entries=8 output=/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/bench/index_all-MiniLM-L6-v2.jsonl
+done (/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/bench/index_all-MiniLM-L6-v2.jsonl)
+  Building index for 'pplx-embed-v1-0.6b' ... model=pplx-embed-v1-0.6b.safetensors indexed_entries=8 output=/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/bench/index_pplx-embed-v1-0.6b.jsonl
+done (/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/bench/index_pplx-embed-v1-0.6b.jsonl)
 
 === Running evals ===
---- hash ---
-run_id=eval-1772193455556 model=hash status=Failed total=12 passed=4 failed=8 pass_rate=0.3333 required=0.8500 meets_threshold=false
-case=case-001 passed=false decision=Hit faq_id=faq-auth-reset-password score=0.5893 latency=0.0ms
+--- hash (threshold=0.55) ---
+run_id=eval-1772199491184 model=hash status=Failed total=12 passed=4 failed=8 pass_rate=0.3333 required=0.8500 meets_threshold=false
+case=case-001 passed=false decision=Hit faq_id=faq-auth-reset-password score=0.5893 latency=0.1ms
 case=case-002 passed=false decision=Hit faq_id=faq-billing-trial-length score=0.6172 latency=0.0ms
 case=case-003 passed=false decision=Hit faq_id=faq-account-delete score=0.6172 latency=0.0ms
 case=case-004 passed=false decision=Miss faq_id=faq-billing-download-invoice score=0.2722 latency=0.0ms
@@ -23,21 +27,62 @@ case=case-009 passed=true decision=Miss faq_id=faq-security-data-residency score
 case=case-010 passed=true decision=Miss faq_id=faq-product-supported-browsers score=0.2041 latency=0.0ms
 case=case-011 passed=true decision=Miss faq_id=faq-auth-reset-password score=0.4629 latency=0.0ms
 case=case-012 passed=true decision=Miss faq_id=faq-billing-download-invoice score=0.2887 latency=0.0ms
-total_latency=0.1ms avg_latency=0.0ms
+total_latency=0.2ms avg_latency=0.0ms
 
---- nomic-embed-text-v2-moe.Q4_K_M ---
-run_id=eval-1772193455562 model=/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/models/nomic-embed-text-v2-moe.Q4_K_M.gguf status=Completed total=12 passed=12 failed=0 pass_rate=1.0000 required=0.8500 meets_threshold=true
-case=case-001 passed=true decision=Hit faq_id=faq-auth-reset-password score=0.7905 latency=696.2ms
-case=case-002 passed=true decision=Hit faq_id=faq-billing-trial-length score=0.9095 latency=574.7ms
-case=case-003 passed=true decision=Hit faq_id=faq-account-delete score=0.8074 latency=565.2ms
-case=case-004 passed=true decision=Hit faq_id=faq-billing-download-invoice score=0.7444 latency=681.4ms
-case=case-005 passed=true decision=Hit faq_id=faq-account-change-email score=0.8365 latency=609.8ms
-case=case-006 passed=true decision=Hit faq_id=faq-api-rate-limit score=0.6964 latency=654.6ms
-case=case-007 passed=true decision=Hit faq_id=faq-product-supported-browsers score=0.5749 latency=588.1ms
-case=case-008 passed=true decision=Hit faq_id=faq-security-data-residency score=0.7010 latency=584.7ms
-case=case-009 passed=true decision=Miss faq_id=faq-security-data-residency score=0.5179 latency=607.7ms
-case=case-010 passed=true decision=Miss faq_id=faq-account-delete score=0.4809 latency=560.5ms
-case=case-011 passed=true decision=Miss faq_id=faq-product-supported-browsers score=0.4843 latency=606.4ms
-case=case-012 passed=true decision=Miss faq_id=faq-billing-download-invoice score=0.5267 latency=603.8ms
-total_latency=7333.2ms avg_latency=611.1ms
+--- nomic-embed-text-v2-moe.Q4_K_M (threshold=0.55) ---
+run_id=eval-1772199491196 model=nomic-embed-text-v2-moe.Q4_K_M.gguf status=Completed total=12 passed=12 failed=0 pass_rate=1.0000 required=0.8500 meets_threshold=true
+case=case-001 passed=true decision=Hit faq_id=faq-auth-reset-password score=0.7905 latency=714.5ms
+case=case-002 passed=true decision=Hit faq_id=faq-billing-trial-length score=0.9095 latency=592.9ms
+case=case-003 passed=true decision=Hit faq_id=faq-account-delete score=0.8074 latency=583.7ms
+case=case-004 passed=true decision=Hit faq_id=faq-billing-download-invoice score=0.7444 latency=697.6ms
+case=case-005 passed=true decision=Hit faq_id=faq-account-change-email score=0.8365 latency=631.4ms
+case=case-006 passed=true decision=Hit faq_id=faq-api-rate-limit score=0.6964 latency=682.1ms
+case=case-007 passed=true decision=Hit faq_id=faq-product-supported-browsers score=0.5749 latency=616.3ms
+case=case-008 passed=true decision=Hit faq_id=faq-security-data-residency score=0.7010 latency=611.2ms
+case=case-009 passed=true decision=Miss faq_id=faq-security-data-residency score=0.5179 latency=635.5ms
+case=case-010 passed=true decision=Miss faq_id=faq-account-delete score=0.4809 latency=595.5ms
+case=case-011 passed=true decision=Miss faq_id=faq-product-supported-browsers score=0.4843 latency=643.8ms
+case=case-012 passed=true decision=Miss faq_id=faq-billing-download-invoice score=0.5267 latency=636.5ms
+total_latency=7641.0ms avg_latency=636.7ms
 
+--- all-MiniLM-L6-v2 (threshold=0.90) ---
+run_id=eval-1772199499843 model=all-MiniLM-L6-v2.safetensors status=Failed total=12 passed=10 failed=2 pass_rate=0.8333 required=0.8500 meets_threshold=false
+case=case-001 passed=true decision=Hit faq_id=faq-auth-reset-password score=0.9438 latency=86.8ms
+case=case-002 passed=true decision=Hit faq_id=faq-billing-trial-length score=0.9728 latency=83.9ms
+case=case-003 passed=false decision=Miss faq_id=faq-account-delete score=0.8838 latency=83.7ms
+case=case-004 passed=true decision=Hit faq_id=faq-billing-download-invoice score=0.9186 latency=82.7ms
+case=case-005 passed=true decision=Hit faq_id=faq-account-change-email score=0.9435 latency=82.9ms
+case=case-006 passed=true decision=Hit faq_id=faq-api-rate-limit score=0.9127 latency=83.0ms
+case=case-007 passed=false decision=Miss faq_id=faq-product-supported-browsers score=0.8368 latency=82.6ms
+case=case-008 passed=true decision=Hit faq_id=faq-security-data-residency score=0.9028 latency=81.3ms
+case=case-009 passed=true decision=Miss faq_id=faq-billing-trial-length score=0.8507 latency=82.0ms
+case=case-010 passed=true decision=Miss faq_id=faq-billing-download-invoice score=0.8913 latency=82.6ms
+case=case-011 passed=true decision=Miss faq_id=faq-billing-download-invoice score=0.8855 latency=88.8ms
+case=case-012 passed=true decision=Miss faq_id=faq-billing-download-invoice score=0.8652 latency=88.1ms
+total_latency=1008.5ms avg_latency=84.0ms
+
+--- pplx-embed-v1-0.6b (threshold=0.45) ---
+run_id=eval-1772199500925 model=pplx-embed-v1-0.6b.safetensors status=Failed total=12 passed=5 failed=7 pass_rate=0.4167 required=0.8500 meets_threshold=false
+case=case-001 passed=false decision=Hit faq_id=faq-auth-reset-password score=0.5292 latency=667.7ms
+case=case-002 passed=false decision=Hit faq_id=faq-billing-trial-length score=0.8482 latency=635.2ms
+case=case-003 passed=false decision=Hit faq_id=faq-account-delete score=0.6415 latency=641.1ms
+case=case-004 passed=false decision=Hit faq_id=faq-billing-download-invoice score=0.6347 latency=652.5ms
+case=case-005 passed=true decision=Hit faq_id=faq-account-change-email score=0.8124 latency=651.8ms
+case=case-006 passed=false decision=Hit faq_id=faq-api-rate-limit score=0.5731 latency=647.9ms
+case=case-007 passed=false decision=Hit faq_id=faq-product-supported-browsers score=0.4684 latency=650.0ms
+case=case-008 passed=false decision=Hit faq_id=faq-security-data-residency score=0.5673 latency=651.6ms
+case=case-009 passed=true decision=Miss faq_id=faq-security-data-residency score=0.3090 latency=648.4ms
+case=case-010 passed=true decision=Miss faq_id=faq-billing-download-invoice score=0.2559 latency=627.0ms
+case=case-011 passed=true decision=Miss faq_id=faq-billing-download-invoice score=0.2185 latency=635.7ms
+case=case-012 passed=true decision=Miss faq_id=faq-billing-download-invoice score=0.3526 latency=663.2ms
+total_latency=7772.0ms avg_latency=647.7ms
+
+========================================
+=== Summary ===
+========================================
+Backend                              Threshold    Pass Rate       Passed Avg Latency
+---                                        ---          ---          ---        ---
+hash                                      0.55       0.3333         4/12      0.0ms
+nomic-embed-text-v2-moe.Q4_K_M            0.55       1.0000        12/12    636.7ms
+all-MiniLM-L6-v2                          0.90       0.8333        10/12     84.0ms
+pplx-embed-v1-0.6b                        0.45       0.4167         5/12    647.7ms

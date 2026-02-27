@@ -3,17 +3,18 @@ use clap::{Parser, Subcommand};
 use faq_core::{
     decide, evaluate_cases, load_entries_jsonl, save_entries_jsonl, CandleEmbeddingProvider,
     CandleEvaluationRun, Decision, EmbeddingProvider, EvalCase, FaqEntry, HashEmbeddingProvider,
-    OrchestrationStatus, DEFAULT_EMBEDDING_DIM, DEFAULT_REQUIRED_PASS_RATE, DEFAULT_THRESHOLD,
+    MiniLmEmbeddingProvider, OrchestrationStatus, Qwen3EmbeddingProvider, DEFAULT_EMBEDDING_DIM,
+    DEFAULT_REQUIRED_PASS_RATE, DEFAULT_THRESHOLD,
 };
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Parser)]
 #[command(name = "faq")]
 #[command(about = "Semantic FAQ cache CLI")]
 struct Cli {
-    /// Path to the GGUF model file. When provided with --tokenizer-path, uses Candle for real embeddings.
+    /// Path to the model file (.gguf or .safetensors). When provided with --tokenizer-path, uses neural embeddings.
     #[arg(long, global = true)]
     model_path: Option<PathBuf>,
 
@@ -82,13 +83,57 @@ fn read_eval_cases_json(path: &Path) -> Result<Vec<EvalCase>> {
     Ok(cases)
 }
 
+/// Detect the architecture of a safetensors file by reading its header JSON
+/// and looking for known tensor names.
+fn detect_safetensors_arch(path: &Path) -> Result<&'static str> {
+    let mut file =
+        File::open(path).with_context(|| format!("open safetensors: {}", path.display()))?;
+
+    // First 8 bytes are a little-endian u64 giving the header size
+    let mut size_buf = [0u8; 8];
+    file.read_exact(&mut size_buf)
+        .context("read safetensors header size")?;
+    let header_size = u64::from_le_bytes(size_buf) as usize;
+
+    // Cap at 10 MB to avoid reading the whole file
+    let read_size = header_size.min(10 * 1024 * 1024);
+    let mut header_buf = vec![0u8; read_size];
+    file.read_exact(&mut header_buf)
+        .context("read safetensors header JSON")?;
+
+    let header = String::from_utf8_lossy(&header_buf);
+
+    if header.contains("encoder.layer.0.attention.self.query.weight") {
+        Ok("minilm")
+    } else if header.contains("layers.0.self_attn.q_proj.weight") {
+        Ok("qwen3")
+    } else {
+        anyhow::bail!(
+            "unknown safetensors architecture in {}: header does not contain \
+             known tensor names (expected BERT encoder.layer.* or Qwen3 layers.*)",
+            path.display()
+        )
+    }
+}
+
 fn make_embedder(cli: &Cli) -> Result<Box<dyn EmbeddingProvider>> {
     match (&cli.model_path, &cli.tokenizer_path) {
         (Some(model), Some(tokenizer)) => {
-            eprintln!("Loading Candle model from {} ...", model.display());
-            let provider = CandleEmbeddingProvider::load(model, tokenizer)?;
+            let ext = model.extension().and_then(|e| e.to_str()).unwrap_or("");
+            eprintln!("Loading model from {} ...", model.display());
+            let provider: Box<dyn EmbeddingProvider> = match ext {
+                "gguf" => Box::new(CandleEmbeddingProvider::load(model, tokenizer)?),
+                "safetensors" => match detect_safetensors_arch(model)? {
+                    "minilm" => Box::new(MiniLmEmbeddingProvider::load(model, tokenizer)?),
+                    "qwen3" => Box::new(Qwen3EmbeddingProvider::load(model, tokenizer)?),
+                    other => anyhow::bail!("unknown safetensors architecture: {other}"),
+                },
+                other => anyhow::bail!(
+                    "unsupported model format '.{other}' (expected .gguf or .safetensors)"
+                ),
+            };
             eprintln!("Model loaded.");
-            Ok(Box::new(provider))
+            Ok(provider)
         }
         (None, None) => Ok(Box::new(HashEmbeddingProvider::new(DEFAULT_EMBEDDING_DIM))),
         _ => anyhow::bail!("--model-path and --tokenizer-path must both be provided"),
@@ -100,7 +145,11 @@ fn run() -> Result<()> {
     let model_name = cli
         .model_path
         .as_ref()
-        .map(|p| p.display().to_string())
+        .map(|p| {
+            p.file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string())
+        })
         .unwrap_or_else(|| "hash".to_string());
 
     match &cli.command {

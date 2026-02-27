@@ -3,6 +3,7 @@
 
 # Model files (large binaries, download via models/README.md)
 models/*.gguf
+models/*.safetensors
 models/*.json
 !models/README.md
 

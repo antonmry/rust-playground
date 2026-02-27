@@ -1,15 +1,22 @@
 # Semantic FAQ Cache
 
 A Rust CLI that matches user questions to a curated FAQ database using semantic
-similarity. It runs a quantized
-[nomic-embed-text-v2-moe](https://huggingface.co/nomic-ai/nomic-embed-text-v2-moe)
-model locally via [Candle](https://github.com/huggingface/candle) — no external
-API calls needed.
+similarity. It runs embedding models locally via
+[Candle](https://github.com/huggingface/candle) — no external API calls needed.
+
+Supported backends:
+
+- [nomic-embed-text-v2-moe](https://huggingface.co/nomic-ai/nomic-embed-text-v2-moe)
+  (GGUF, 768-dim)
+- [pplx-embed-v1-0.6b](https://huggingface.co/perplexity-ai/pplx-embed-v1-0.6b)
+  (safetensors, 1024-dim)
+- [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
+  (safetensors, 384-dim)
 
 ## How it works
 
-1. **Build an index** — embeds each FAQ question into a 768-dimensional vector
-   and stores the result as JSONL.
+1. **Build an index** — embeds each FAQ question into a vector (768 or 1024-dim
+   depending on model) and stores the result as JSONL.
 2. **Query** — embeds the user's question, computes cosine similarity against
    all indexed FAQs, and returns the best match if it exceeds a threshold.
 3. **Eval** — runs a set of test cases against the index, reporting pass/fail,
@@ -18,8 +25,8 @@ API calls needed.
 ## Prerequisites
 
 - Rust toolchain (1.75+)
-- Model files: download the GGUF model and tokenizer into the `models/` folder.
-  See [models/README.md](models/README.md) for instructions.
+- Model files: download at least one model and its tokenizer into the `models/`
+  folder. See [models/README.md](models/README.md) for instructions.
 
 ## Build
 
@@ -33,10 +40,11 @@ compiles ~214 crates and takes a few minutes.
 
 ## Usage
 
-All commands accept optional `--model-path` and `--tokenizer-path` flags. When
-provided, the CLI uses the Candle neural network backend for real semantic
-embeddings. Without them, it falls back to a deterministic hash-based embedding
-(useful for fast testing but not semantically meaningful).
+All commands accept optional `--model-path` and `--tokenizer-path` flags. The
+CLI auto-detects the backend from the model file extension (`.gguf` for
+nomic-bert-moe, `.safetensors` auto-detected as MiniLM or Qwen3). Without these flags, it
+falls back to a deterministic hash-based embedding (useful for fast testing but
+not semantically meaningful).
 
 ### Build index
 
@@ -71,10 +79,37 @@ Use `--threshold` to adjust hit/miss sensitivity (default: 0.55).
 Output includes per-case pass/fail, similarity score, latency, and summary
 statistics.
 
+### With pplx-embed (safetensors backend)
+
+```bash
+./target/release/faq_cli \
+  --model-path ./models/pplx-embed-v1-0.6b.safetensors \
+  --tokenizer-path ./models/pplx-embed-v1-0.6b-tokenizer.json \
+  build-index --input data/faq_seed.jsonl --output /tmp/faq_pplx.jsonl
+
+./target/release/faq_cli \
+  --model-path ./models/pplx-embed-v1-0.6b.safetensors \
+  --tokenizer-path ./models/pplx-embed-v1-0.6b-tokenizer.json \
+  query --index /tmp/faq_pplx.jsonl --question "I forgot my password"
+```
+
+### With all-MiniLM-L6-v2 (safetensors backend)
+
+```bash
+./target/release/faq_cli \
+  --model-path ./models/all-MiniLM-L6-v2.safetensors \
+  --tokenizer-path ./models/all-MiniLM-L6-v2-tokenizer.json \
+  build-index --input data/faq_seed.jsonl --output /tmp/faq_minilm.jsonl
+
+./target/release/faq_cli \
+  --model-path ./models/all-MiniLM-L6-v2.safetensors \
+  --tokenizer-path ./models/all-MiniLM-L6-v2-tokenizer.json \
+  query --index /tmp/faq_minilm.jsonl --question "I forgot my password"
+```
+
 ### Without the model (hash backend)
 
 ```bash
 ./target/release/faq_cli build-index --input data/faq_seed.jsonl --output /tmp/faq_hash.jsonl
 ./target/release/faq_cli eval --index /tmp/faq_hash.jsonl --cases data/eval_cases.json
 ```
-
