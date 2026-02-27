@@ -1,0 +1,12 @@
+[package]
+name = "faq_cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+faq_core = { path = "../faq_core" }
+serde_json = "1"
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }

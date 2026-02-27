@@ -1,0 +1,223 @@
+-- allium: 1
+-- semantic-faq-cache.allium
+
+-- Scope: Threshold-based semantic FAQ cache for chat-style question answering
+-- Includes: Curated FAQ lifecycle, semantic lookup, hit/miss routing
+-- Excludes:
+--   - LLM/RAG/tool fallback generation internals
+--   - ANN/vector index internals and storage-engine design
+--   - Offline dataset preparation and benchmark mechanics
+--   - TTL/expiry policy
+-- Dependencies:
+--   - Embedding and retrieval algorithm details are deferred specs
+-- Decisions:
+--   - FAQ embeddings are computed from question text only
+--   - cache_hit_threshold is a single global value for PoC
+--   - Retrieval uses no product/locale filtering in PoC
+--   - Eligibility does not require verification in PoC
+--   - FAQ entries do not expire automatically in PoC
+--   - Two-stage verifier is deferred for PoC (single-stage threshold flow only)
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity Operator {
+    id: String
+}
+
+external entity ChatSession {
+    id: String
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value RetrievalMatch {
+    entry_id: String?
+    answer: String?
+    score: Decimal
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum EntrySource { human_curated | mined | imported }
+enum FaqStatus { active | retired }
+enum LookupDecision { pending | hit | miss }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity FAQEntry {
+    id: String
+    question: String
+    answer: String
+    embedding: List<Decimal>
+    created_at: Timestamp
+    updated_at: Timestamp
+    product: String?
+    locale: String?
+    tags: Set<String>
+    version: String?
+    source: EntrySource
+    verified: Boolean
+    status: FaqStatus
+    created_by: Operator
+    updated_by: Operator
+
+    is_eligible: status = active
+}
+
+entity LookupAttempt {
+    session: ChatSession
+    question: String
+    query_embedding: List<Decimal>
+    threshold: Decimal
+    match: RetrievalMatch
+    decision: LookupDecision
+    created_at: Timestamp
+    resolved_at: Timestamp?
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    cache_hit_threshold: Decimal = 0.85
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule PublishFAQEntry {
+    when: OperatorPublishesFAQ(
+        operator,
+        id,
+        question,
+        answer,
+        product?,
+        locale?,
+        tags,
+        version?,
+        source,
+        verified
+    )
+    let embedding = Embedding.encode(text: question)
+    ensures: FAQEntry.created(
+        id: id
+        question: question
+        answer: answer
+        embedding: embedding
+        created_at: now
+        updated_at: now
+        product: product
+        locale: locale
+        tags: tags
+        version: version
+        source: source
+        verified: verified
+        status: active
+        created_by: operator
+        updated_by: operator
+    )
+}
+
+rule ReviseFAQEntry {
+    when: OperatorRevisesFAQ(
+        operator,
+        entry,
+        question,
+        answer,
+        product?,
+        locale?,
+        tags,
+        version?,
+        verified
+    )
+    requires: entry.status != retired
+    let embedding = Embedding.encode(text: question)
+    ensures: entry.question = question
+    ensures: entry.answer = answer
+    ensures: entry.embedding = embedding
+    ensures: entry.product = product
+    ensures: entry.locale = locale
+    ensures: entry.tags = tags
+    ensures: entry.version = version
+    ensures: entry.verified = verified
+    ensures: entry.updated_at = now
+    ensures: entry.updated_by = operator
+    ensures: entry.status = active
+}
+
+rule RetireFAQEntry {
+    when: OperatorRetiresFAQ(operator, entry)
+    requires: entry.status != retired
+    ensures: entry.status = retired
+    ensures: entry.updated_at = now
+    ensures: entry.updated_by = operator
+}
+
+rule EvaluateSemanticLookup {
+    when: UserAsksQuestion(session, question)
+    let query_embedding = Embedding.encode(text: question)
+    let candidates = FAQEntries where is_eligible
+    let match = SemanticRetrieval.top_match(query_embedding: query_embedding, entries: candidates)
+    ensures: LookupAttempt.created(
+        session: session
+        question: question
+        query_embedding: query_embedding
+        threshold: config.cache_hit_threshold
+        match: match
+        decision: pending
+        created_at: now
+        resolved_at: null
+    )
+}
+
+rule MarkCacheHit {
+    when: attempt: LookupAttempt.created
+    requires:
+        attempt.match.entry_id != null
+        and attempt.match.answer != null
+        and attempt.match.score >= attempt.threshold
+    ensures: attempt.decision = hit
+    ensures: attempt.resolved_at = now
+    ensures:
+        SemanticCacheHit(
+            session: attempt.session
+            question: attempt.question
+            answer: attempt.match.answer
+            entry_id: attempt.match.entry_id
+            score: attempt.match.score
+        )
+}
+
+rule MarkCacheMiss {
+    when: attempt: LookupAttempt.created
+    requires:
+        attempt.match.entry_id = null
+        or attempt.match.answer = null
+        or attempt.match.score < attempt.threshold
+    ensures: attempt.decision = miss
+    ensures: attempt.resolved_at = now
+    ensures:
+        FallbackAnswerRequested(
+            session: attempt.session
+            question: attempt.question
+            nearest_entry_id: attempt.match.entry_id
+            nearest_score: attempt.match.score
+        )
+}
+
+------------------------------------------------------------
+-- Deferred Specifications
+------------------------------------------------------------
+
+deferred Embedding.encode               -- see: detailed/embedding-policy.allium
+deferred SemanticRetrieval.top_match    -- see: detailed/semantic-retrieval.allium

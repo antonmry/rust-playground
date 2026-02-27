@@ -1,0 +1,168 @@
+-- allium: 1
+-- candle-eval-orchestration.allium
+-- use declarations
+use "./embedding-policy.allium" as embedding
+use "../semantic-faq-cache-testing.allium" as testing
+
+-- Scope: Candle-backed evaluation orchestration for semantic FAQ cache
+-- Includes: Runtime startup with selected GGUF model, eval launch, completion status
+-- Excludes:
+--   - Embedding internals (owned by embedding-policy)
+--   - Case scoring internals (owned by semantic-faq-cache-testing)
+-- Dependencies:
+--   - embedding-policy.allium
+--   - semantic-faq-cache-testing.allium
+-- Decisions:
+--   - Selected model path is ./nomic-embed-text-v2-moe.Q4_K_M.gguf
+--   - Each run launches Candle first, then executes eval
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum OrchestrationStatus { waiting_runtime | evaluating | completed | failed }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity CandleEvaluationRun {
+    run_id: String
+    dataset: testing/TestDataset
+    threshold: Decimal
+    required_pass_rate: Decimal
+    status: OrchestrationStatus
+    requested_at: Timestamp
+    runtime_ready_at: Timestamp?
+    started_eval_at: Timestamp?
+    completed_at: Timestamp?
+    total_cases: Integer?
+    passed_cases: Integer?
+    failed_cases: Integer?
+    pass_rate: Decimal?
+    error: String?
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    default_threshold: Decimal = 0.85
+    required_pass_rate: Decimal = 0.85
+    model_id: String = "nomic-embed-text-v2-moe"
+    model_revision: String = "local-gguf"
+    model_path: String = "./nomic-embed-text-v2-moe.Q4_K_M.gguf"
+    embedding_dim: Integer = 768
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule StartCandleBackedEvaluationRun {
+    when: StartCandleBackedEvaluation(run_id, dataset, threshold?)
+    requires: dataset.status = active
+    requires: embedding/runtime.status in {offline, failed}
+    let selected_threshold = threshold ?? config.default_threshold
+    ensures: CandleEvaluationRun.created(
+        run_id: run_id
+        dataset: dataset
+        threshold: selected_threshold
+        required_pass_rate: config.required_pass_rate
+        status: waiting_runtime
+        requested_at: now
+        runtime_ready_at: null
+        started_eval_at: null
+        completed_at: null
+        total_cases: null
+        passed_cases: null
+        failed_cases: null
+        pass_rate: null
+        error: null
+    )
+    ensures:
+        embedding/ConfigureCandleModel(
+            config.model_id
+            config.model_revision
+            config.model_path
+            config.embedding_dim
+        )
+    ensures:
+        embedding/CandleModelArtifactsPrepared(
+            config.model_id
+            config.model_revision
+            config.model_path
+            config.embedding_dim
+        )
+    ensures: embedding/StartEmbeddingRuntime
+}
+
+rule LaunchEvalWhenRuntimeReady {
+    when: embedding/CandleRuntimeBooted(_, model_id, revision)
+    requires:
+        model_id = config.model_id
+        and revision = config.model_revision
+    for run in CandleEvaluationRuns where status = waiting_runtime:
+        ensures: run.status = evaluating
+        ensures: run.runtime_ready_at = now
+        ensures: run.started_eval_at = now
+        ensures:
+            testing/StartSemanticCacheEvaluation(
+                run.run_id
+                run.dataset
+                run.threshold
+            )
+}
+
+rule FailRunWhenRuntimeBootFails {
+    when: embedding/CandleRuntimeBootFailed(_, reason)
+    for run in CandleEvaluationRuns where status = waiting_runtime:
+        ensures: run.status = failed
+        ensures: run.error = reason
+        ensures: run.completed_at = now
+        ensures:
+            CandleBackedEvaluationFailed(
+                run_id: run.run_id
+                reason: reason
+            )
+}
+
+rule CompleteCandleBackedEvaluationRun {
+    when:
+        testing/SemanticCacheEvaluationCompleted(
+            completed_run_id,
+            dataset_id,
+            total_cases,
+            passed_cases,
+            failed_cases,
+            pass_rate,
+            required_pass_rate,
+            meets_threshold
+        )
+    for run in CandleEvaluationRuns where
+        run_id = completed_run_id
+        and status = evaluating
+        and dataset.id = dataset_id:
+        ensures: run.total_cases = total_cases
+        ensures: run.passed_cases = passed_cases
+        ensures: run.failed_cases = failed_cases
+        ensures: run.pass_rate = pass_rate
+        ensures: run.required_pass_rate = required_pass_rate
+        ensures: run.completed_at = now
+        ensures:
+            if meets_threshold:
+                run.status = completed
+                CandleBackedEvaluationPassed(
+                    run_id: run.run_id
+                    pass_rate: run.pass_rate
+                    required_pass_rate: run.required_pass_rate
+                )
+            else:
+                run.status = failed
+                run.error = "pass_rate_below_required"
+                CandleBackedEvaluationFailed(
+                    run_id: run.run_id
+                    reason: "pass_rate_below_required"
+                )
+}

@@ -1,0 +1,54 @@
+-- allium: 1
+-- embedding-input-compose.allium
+
+-- Scope: Role-aware embedding input formatting
+-- Includes: query vs faq_entry prefixing and default behavior
+-- Excludes:
+--   - Text normalization (handled by TextNormalization.canonicalize)
+--   - Model inference execution
+-- Dependencies:
+--   - Parent deferred contract: EmbeddingInput.compose
+-- Decisions:
+--   - Query inputs use query prefix when provided
+--   - FAQ inputs use passage prefix when provided
+--   - Null prefixes are treated as empty strings
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule ComposeQueryInput {
+    when:
+        EmbeddingInput.compose(
+            role: query
+            normalized_text: normalized_text
+            query_prefix: query_prefix
+            faq_prefix: faq_prefix
+        )
+    let prefix = query_prefix ?? ""
+    ensures: return prefix + normalized_text
+}
+
+rule ComposeFaqEntryInput {
+    when:
+        EmbeddingInput.compose(
+            role: faq_entry
+            normalized_text: normalized_text
+            query_prefix: query_prefix
+            faq_prefix: faq_prefix
+        )
+    let prefix = faq_prefix ?? ""
+    ensures: return prefix + normalized_text
+}
+
+rule ComposeRejectsUnknownRole {
+    when:
+        EmbeddingInput.compose(
+            role: role
+            normalized_text: normalized_text
+            query_prefix: query_prefix
+            faq_prefix: faq_prefix
+        )
+    requires: role not in {query, faq_entry}
+    ensures: InputComposeFailed(reason: "unsupported_encode_role")
+}

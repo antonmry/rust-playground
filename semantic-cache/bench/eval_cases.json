@@ -1,0 +1,98 @@
+[
+  {
+    "case_id": "case-001",
+    "question": "I forgot my password, how can I sign in again?",
+    "expected_decision": "hit",
+    "expected_faq_id": "faq-auth-reset-password",
+    "min_similarity": 0.75,
+    "notes": "Paraphrase of reset password intent"
+  },
+  {
+    "case_id": "case-002",
+    "question": "How many days is your free trial?",
+    "expected_decision": "hit",
+    "expected_faq_id": "faq-billing-trial-length",
+    "min_similarity": 0.85,
+    "notes": "Equivalent billing trial wording"
+  },
+  {
+    "case_id": "case-003",
+    "question": "Can I permanently remove my profile?",
+    "expected_decision": "hit",
+    "expected_faq_id": "faq-account-delete",
+    "min_similarity": 0.75,
+    "notes": "Account deletion intent"
+  },
+  {
+    "case_id": "case-004",
+    "question": "Where can I get last month's invoice PDF?",
+    "expected_decision": "hit",
+    "expected_faq_id": "faq-billing-download-invoice",
+    "min_similarity": 0.70,
+    "notes": "Billing invoice retrieval"
+  },
+  {
+    "case_id": "case-005",
+    "question": "How do I update the email on my account?",
+    "expected_decision": "hit",
+    "expected_faq_id": "faq-account-change-email",
+    "min_similarity": 0.80,
+    "notes": "Profile/email change intent"
+  },
+  {
+    "case_id": "case-006",
+    "question": "What API throttling limits do you enforce?",
+    "expected_decision": "hit",
+    "expected_faq_id": "faq-api-rate-limit",
+    "min_similarity": 0.65,
+    "notes": "Rate limiting intent"
+  },
+  {
+    "case_id": "case-007",
+    "question": "Does your app work in Firefox and Safari?",
+    "expected_decision": "hit",
+    "expected_faq_id": "faq-product-supported-browsers",
+    "min_similarity": 0.55,
+    "notes": "Supported browsers intent"
+  },
+  {
+    "case_id": "case-008",
+    "question": "Can we keep customer data in EU region?",
+    "expected_decision": "hit",
+    "expected_faq_id": "faq-security-data-residency",
+    "min_similarity": 0.65,
+    "notes": "Data residency intent"
+  },
+  {
+    "case_id": "case-009",
+    "question": "Do you support SAML single sign-on?",
+    "expected_decision": "miss",
+    "expected_faq_id": null,
+    "min_similarity": null,
+    "notes": "Out of fixture scope; should miss"
+  },
+  {
+    "case_id": "case-010",
+    "question": "Is there an annual billing discount?",
+    "expected_decision": "miss",
+    "expected_faq_id": null,
+    "min_similarity": null,
+    "notes": "Not covered by fixture FAQs"
+  },
+  {
+    "case_id": "case-011",
+    "question": "How do I integrate this with Salesforce?",
+    "expected_decision": "miss",
+    "expected_faq_id": null,
+    "min_similarity": null,
+    "notes": "Out-of-domain integration question"
+  },
+  {
+    "case_id": "case-012",
+    "question": "Where can I download your SOC 2 report?",
+    "expected_decision": "miss",
+    "expected_faq_id": null,
+    "min_similarity": null,
+    "notes": "Security compliance query not in fixtures"
+  }
+]

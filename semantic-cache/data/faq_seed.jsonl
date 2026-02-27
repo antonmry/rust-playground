@@ -1,0 +1,8 @@
+{"id":"faq-auth-reset-password","question":"How do I reset my password?","answer":"Use the Forgot password link on the sign-in page, then follow the email instructions."}
+{"id":"faq-billing-trial-length","question":"How long is the free trial?","answer":"The free trial lasts 14 days from signup."}
+{"id":"faq-account-delete","question":"How can I permanently delete my account?","answer":"Go to Settings > Account > Delete account and confirm the action."}
+{"id":"faq-billing-download-invoice","question":"How do I download an invoice?","answer":"Open Billing > Invoices, then choose the invoice and click Download PDF."}
+{"id":"faq-account-change-email","question":"How do I change my account email address?","answer":"Go to Profile > Email, enter the new address, and confirm via verification link."}
+{"id":"faq-api-rate-limit","question":"What is the API rate limit?","answer":"The API allows 120 requests per minute per workspace token."}
+{"id":"faq-product-supported-browsers","question":"Which browsers are supported?","answer":"We support the latest two versions of Chrome, Firefox, Safari, and Edge."}
+{"id":"faq-security-data-residency","question":"Do you support data residency in the EU?","answer":"Yes, customers can choose EU data residency for production workspaces."}

@@ -1,0 +1,238 @@
+-- allium: 1
+-- embedding-policy.allium
+
+-- Scope: Candle-backed embedding runtime and encoding policy for semantic FAQ cache
+-- Includes: Model artifact registration, runtime lifecycle, encode request lifecycle
+-- Excludes:
+--   - Retrieval ranking and thresholding
+--   - Fallback answering logic
+--   - ANN index lifecycle
+-- Dependencies:
+--   - Parent spec: semantic-faq-cache.allium
+-- Decisions:
+--   - Embedding provider is Candle
+--   - Selected model artifact: nomic-embed-text-v2-moe.Q4_K_M.gguf
+--   - Model artifacts can be pre-downloaded before runtime startup
+--   - Embedding inputs are question text (query) and FAQ question text (faq_entry)
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum EmbeddingProvider { candle }
+enum RuntimeStatus { offline | starting | ready | failed }
+enum EncodeRole { query | faq_entry }
+enum RequestStatus { pending | succeeded | failed }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity EmbeddingRuntime {
+    provider: EmbeddingProvider
+    status: RuntimeStatus
+    model_id: String
+    model_revision: String
+    model_path: String
+    embedding_dim: Integer
+    artifacts_ready: Boolean
+    query_prefix: String?
+    faq_prefix: String?
+    loaded_at: Timestamp?
+    last_error: String?
+
+    requests: EmbeddingRequest with runtime = this
+    pending_requests: requests where status = pending
+}
+
+entity EmbeddingRequest {
+    runtime: EmbeddingRuntime
+    text: String
+    role: EncodeRole
+    normalized_text: String
+    encoded_input: String
+    vector: List<Decimal>?
+    status: RequestStatus
+    requested_at: Timestamp
+    completed_at: Timestamp?
+    error: String?
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    startup_timeout: Duration = 60.seconds
+    default_model_id: String = "nomic-embed-text-v2-moe"
+    default_model_revision: String = "local-gguf"
+    default_model_path: String = "./nomic-embed-text-v2-moe.Q4_K_M.gguf"
+    default_embedding_dim: Integer = 768
+}
+
+------------------------------------------------------------
+-- Defaults
+------------------------------------------------------------
+
+default EmbeddingRuntime runtime = {
+    provider: candle,
+    status: offline,
+    model_id: "nomic-embed-text-v2-moe",
+    model_revision: "local-gguf",
+    model_path: "./nomic-embed-text-v2-moe.Q4_K_M.gguf",
+    embedding_dim: 768,
+    artifacts_ready: false,
+    query_prefix: "query: ",
+    faq_prefix: "passage: ",
+    loaded_at: null,
+    last_error: null
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule ConfigureModelProfile {
+    when: ConfigureCandleModel(model_id, revision, model_path, embedding_dim)
+    requires: runtime.status = offline
+    ensures: runtime.model_id = model_id
+    ensures: runtime.model_revision = revision
+    ensures: runtime.model_path = model_path
+    ensures: runtime.embedding_dim = embedding_dim
+}
+
+rule ConfigureInputPrefixes {
+    when: ConfigureEmbeddingPrefixes(query_prefix?, faq_prefix?)
+    requires: runtime.status = offline
+    ensures: runtime.query_prefix = query_prefix
+    ensures: runtime.faq_prefix = faq_prefix
+}
+
+rule UseDefaultModelProfile {
+    when: UseDefaultCandleModel
+    requires: runtime.status = offline
+    ensures: runtime.model_id = config.default_model_id
+    ensures: runtime.model_revision = config.default_model_revision
+    ensures: runtime.model_path = config.default_model_path
+    ensures: runtime.embedding_dim = config.default_embedding_dim
+    ensures: runtime.artifacts_ready = false
+}
+
+rule RegisterPreDownloadedModelArtifacts {
+    when: CandleModelArtifactsPrepared(model_id, revision, model_path, embedding_dim)
+    requires:
+        model_id = runtime.model_id
+        and revision = runtime.model_revision
+        and model_path = runtime.model_path
+        and embedding_dim = runtime.embedding_dim
+    ensures: runtime.artifacts_ready = true
+    ensures: runtime.last_error = null
+}
+
+rule StartCandleRuntime {
+    when: StartEmbeddingRuntime
+    requires: runtime.status in {offline, failed}
+    requires: runtime.artifacts_ready
+    ensures: runtime.status = starting
+    ensures:
+        CandleRuntimeBootRequested(
+            provider: candle
+            model_id: runtime.model_id
+            revision: runtime.model_revision
+            model_path: runtime.model_path
+            embedding_dim: runtime.embedding_dim
+            timeout: config.startup_timeout
+        )
+}
+
+rule MarkCandleRuntimeReady {
+    when: CandleRuntimeBooted(provider, model_id, revision)
+    requires:
+        provider = candle
+        and model_id = runtime.model_id
+        and revision = runtime.model_revision
+    ensures: runtime.status = ready
+    ensures: runtime.loaded_at = now
+    ensures: runtime.last_error = null
+}
+
+rule MarkCandleRuntimeFailed {
+    when: CandleRuntimeBootFailed(provider, reason)
+    requires: provider = candle
+    ensures: runtime.status = failed
+    ensures: runtime.last_error = reason
+}
+
+rule QueueEmbeddingRequest {
+    when: EmbeddingEncodeRequested(text, role)
+    requires: runtime.status = ready
+    let normalized_text = TextNormalization.canonicalize(text)
+    let encoded_input =
+        EmbeddingInput.compose(
+            role: role
+            normalized_text: normalized_text
+            query_prefix: runtime.query_prefix
+            faq_prefix: runtime.faq_prefix
+        )
+    ensures: EmbeddingRequest.created(
+        runtime: runtime
+        text: text
+        role: role
+        normalized_text: normalized_text
+        encoded_input: encoded_input
+        vector: null
+        status: pending
+        requested_at: now
+        completed_at: null
+        error: null
+    )
+}
+
+rule ResolveEmbeddingRequest {
+    when: request: EmbeddingRequest.created
+    requires: request.status = pending
+    requires: request.runtime.status = ready
+    let vector =
+        CandleEncoder.encode(
+            model_path: request.runtime.model_path
+            model_revision: request.runtime.model_revision
+            text: request.encoded_input
+            expected_dim: request.runtime.embedding_dim
+        )
+    ensures: request.vector = vector
+    ensures: request.status = succeeded
+    ensures: request.completed_at = now
+    ensures:
+        EmbeddingEncoded(
+            text: request.text
+            role: request.role
+            vector: request.vector
+        )
+}
+
+rule RejectEmbeddingWhenRuntimeUnavailable {
+    when: EmbeddingEncodeRequested(text, role)
+    requires: runtime.status != ready
+    ensures:
+        EmbeddingEncodeRejected(
+            text: text
+            role: role
+            reason: "candle_runtime_not_ready"
+        )
+}
+
+rule MarkEmbeddingRequestFailed {
+    when: EmbeddingEncodeFailed(request, reason)
+    requires: request.status = pending
+    ensures: request.status = failed
+    ensures: request.error = reason
+    ensures: request.completed_at = now
+}
+
+------------------------------------------------------------
+-- Deferred Specifications
+------------------------------------------------------------
+
+deferred TextNormalization.canonicalize    -- see: detailed/text-normalization.allium
+deferred EmbeddingInput.compose            -- see: detailed/embedding-input-compose.allium
+deferred CandleEncoder.encode              -- see: detailed/candle-encoder.allium

@@ -1,0 +1,43 @@
+Using: /Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/target/release/faq_cli
+========================================
+Detected backends: hash nomic-embed-text-v2-moe.Q4_K_M
+
+=== Building indexes ===
+  Building index for 'hash' ... model=hash indexed_entries=8 output=/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/bench/index_hash.jsonl
+done (/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/bench/index_hash.jsonl)
+  Building index for 'nomic-embed-text-v2-moe.Q4_K_M' ... model=/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/models/nomic-embed-text-v2-moe.Q4_K_M.gguf indexed_entries=8 output=/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/bench/index_nomic-embed-text-v2-moe.Q4_K_M.jsonl
+done (/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/bench/index_nomic-embed-text-v2-moe.Q4_K_M.jsonl)
+
+=== Running evals ===
+--- hash ---
+run_id=eval-1772193455556 model=hash status=Failed total=12 passed=4 failed=8 pass_rate=0.3333 required=0.8500 meets_threshold=false
+case=case-001 passed=false decision=Hit faq_id=faq-auth-reset-password score=0.5893 latency=0.0ms
+case=case-002 passed=false decision=Hit faq_id=faq-billing-trial-length score=0.6172 latency=0.0ms
+case=case-003 passed=false decision=Hit faq_id=faq-account-delete score=0.6172 latency=0.0ms
+case=case-004 passed=false decision=Miss faq_id=faq-billing-download-invoice score=0.2722 latency=0.0ms
+case=case-005 passed=false decision=Hit faq_id=faq-account-change-email score=0.7071 latency=0.0ms
+case=case-006 passed=false decision=Miss faq_id=faq-api-rate-limit score=0.3086 latency=0.0ms
+case=case-007 passed=false decision=Miss faq_id=faq-security-data-residency score=0.1250 latency=0.0ms
+case=case-008 passed=false decision=Miss faq_id=faq-security-data-residency score=0.3750 latency=0.0ms
+case=case-009 passed=true decision=Miss faq_id=faq-security-data-residency score=0.4009 latency=0.0ms
+case=case-010 passed=true decision=Miss faq_id=faq-product-supported-browsers score=0.2041 latency=0.0ms
+case=case-011 passed=true decision=Miss faq_id=faq-auth-reset-password score=0.4629 latency=0.0ms
+case=case-012 passed=true decision=Miss faq_id=faq-billing-download-invoice score=0.2887 latency=0.0ms
+total_latency=0.1ms avg_latency=0.0ms
+
+--- nomic-embed-text-v2-moe.Q4_K_M ---
+run_id=eval-1772193455562 model=/Users/antonmry/Workspace/Galiglobal/rust-playground/semantic-cache/models/nomic-embed-text-v2-moe.Q4_K_M.gguf status=Completed total=12 passed=12 failed=0 pass_rate=1.0000 required=0.8500 meets_threshold=true
+case=case-001 passed=true decision=Hit faq_id=faq-auth-reset-password score=0.7905 latency=696.2ms
+case=case-002 passed=true decision=Hit faq_id=faq-billing-trial-length score=0.9095 latency=574.7ms
+case=case-003 passed=true decision=Hit faq_id=faq-account-delete score=0.8074 latency=565.2ms
+case=case-004 passed=true decision=Hit faq_id=faq-billing-download-invoice score=0.7444 latency=681.4ms
+case=case-005 passed=true decision=Hit faq_id=faq-account-change-email score=0.8365 latency=609.8ms
+case=case-006 passed=true decision=Hit faq_id=faq-api-rate-limit score=0.6964 latency=654.6ms
+case=case-007 passed=true decision=Hit faq_id=faq-product-supported-browsers score=0.5749 latency=588.1ms
+case=case-008 passed=true decision=Hit faq_id=faq-security-data-residency score=0.7010 latency=584.7ms
+case=case-009 passed=true decision=Miss faq_id=faq-security-data-residency score=0.5179 latency=607.7ms
+case=case-010 passed=true decision=Miss faq_id=faq-account-delete score=0.4809 latency=560.5ms
+case=case-011 passed=true decision=Miss faq_id=faq-product-supported-browsers score=0.4843 latency=606.4ms
+case=case-012 passed=true decision=Miss faq_id=faq-billing-download-invoice score=0.5267 latency=603.8ms
+total_latency=7333.2ms avg_latency=611.1ms
+

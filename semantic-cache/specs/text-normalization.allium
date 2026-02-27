@@ -1,0 +1,42 @@
+-- allium: 1
+-- text-normalization.allium
+
+-- Scope: Canonical text normalization for embedding requests
+-- Includes: whitespace cleanup, case normalization, deterministic output
+-- Excludes:
+--   - Language-specific stemming/lemmatization
+--   - Semantic rewriting/paraphrasing
+-- Dependencies:
+--   - Parent deferred contract: TextNormalization.canonicalize
+-- Decisions:
+--   - Canonical form is deterministic and idempotent
+--   - Normalization is intentionally conservative for FAQ retrieval
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule CanonicalizeEmbeddingText {
+    when: TextNormalization.canonicalize(text)
+    let trimmed = text.trim()
+    let single_spaced = Regex.replace(trimmed, pattern: "\\s+", with: " ")
+    let canonical = String.to_lowercase(single_spaced)
+    ensures: return canonical
+}
+
+rule CanonicalizationUsesEmptyForWhitespaceOnlyInput {
+    when: TextNormalization.canonicalize(text)
+    requires: text.trim() = ""
+    ensures: return ""
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant CanonicalizationIdempotent {
+    for text in Strings:
+        TextNormalization.canonicalize(
+            TextNormalization.canonicalize(text)
+        ) = TextNormalization.canonicalize(text)
+}

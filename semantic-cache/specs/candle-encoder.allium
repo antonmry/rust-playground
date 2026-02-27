@@ -1,0 +1,75 @@
+-- allium: 1
+-- candle-encoder.allium
+
+-- Scope: Candle-backed embedding inference contract
+-- Includes: input validation, inference call, dimensionality checks
+-- Excludes:
+--   - Runtime boot lifecycle (handled by embedding-policy)
+--   - Retrieval ranking and thresholding
+-- Dependencies:
+--   - Parent deferred contract: CandleEncoder.encode
+-- Decisions:
+--   - Returned vectors are L2-normalized
+--   - Mismatched dimensions fail fast
+--   - Empty/whitespace-only encoded input is rejected
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule EncodeWithCandleRuntime {
+    when:
+        CandleEncoder.encode(
+            model_path: model_path
+            model_revision: model_revision
+            text: text
+            expected_dim: expected_dim
+        )
+    requires: model_path != ""
+    requires: expected_dim > 0
+    requires: text.trim() != ""
+    let raw_vector =
+        CandleRuntime.infer_embedding(
+            model_path: model_path
+            model_revision: model_revision
+            input: text
+        )
+    requires: raw_vector.length = expected_dim
+    let normalized = Vector.l2_normalize(raw_vector)
+    ensures: return normalized
+}
+
+rule EncodeFailsOnDimensionMismatch {
+    when:
+        CandleEncoder.encode(
+            model_path: model_path
+            model_revision: model_revision
+            text: text
+            expected_dim: expected_dim
+        )
+    let raw_vector =
+        CandleRuntime.infer_embedding(
+            model_path: model_path
+            model_revision: model_revision
+            input: text
+        )
+    requires: raw_vector.length != expected_dim
+    ensures:
+        CandleEncodeFailed(
+            reason: "embedding_dim_mismatch"
+            actual_dim: raw_vector.length
+            expected_dim: expected_dim
+        )
+}
+
+rule EncodeFailsOnBlankInput {
+    when:
+        CandleEncoder.encode(
+            model_path: model_path
+            model_revision: model_revision
+            text: text
+            expected_dim: expected_dim
+        )
+    requires: text.trim() = ""
+    ensures: CandleEncodeFailed(reason: "empty_input")
+}

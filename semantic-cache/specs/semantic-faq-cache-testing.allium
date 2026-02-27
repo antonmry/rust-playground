@@ -1,0 +1,384 @@
+-- allium: 1
+-- semantic-faq-cache-testing.allium
+
+-- Scope: Offline evaluation for the semantic FAQ cache PoC
+-- Includes: Fixture dataset, query test cases, run orchestration, pass/fail scoring
+-- Excludes:
+--   - Production traffic shadowing
+--   - Model training/fine-tuning
+--   - Online A/B experimentation
+-- Dependencies:
+--   - Semantic cache runtime under test (from semantic-faq-cache domain)
+-- Decisions:
+--   - Tests execute against fixed fixture data in this file
+--   - Runs are single-threshold and single-stage (no verifier)
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value ProbeResult {
+    decision: hit | miss
+    entry_id: String?
+    score: Decimal
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum Decision { hit | miss }
+enum DatasetStatus { draft | active | archived }
+enum RunStatus { running | completed }
+enum CaseEvaluation { pending | passed | failed }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity TestDataset {
+    id: String
+    name: String
+    description: String
+    status: DatasetStatus
+
+    faq_entries: TestFAQ with dataset = this
+    query_cases: TestCase with dataset = this
+}
+
+entity TestFAQ {
+    dataset: TestDataset
+    faq_id: String
+    question: String
+    answer: String
+}
+
+entity TestCase {
+    dataset: TestDataset
+    case_id: String
+    question: String
+    expected_decision: Decision
+    expected_faq_id: String?
+    min_similarity: Decimal?
+    notes: String?
+}
+
+entity TestRun {
+    run_id: String
+    dataset: TestDataset
+    threshold: Decimal
+    status: RunStatus
+    started_at: Timestamp
+    completed_at: Timestamp?
+    total_cases: Integer
+    passed_cases: Integer
+    failed_cases: Integer
+
+    case_results: CaseResult with run = this
+    evaluated_results: case_results where evaluation != pending
+    all_cases_evaluated: evaluated_results.count = total_cases
+}
+
+entity CaseResult {
+    run: TestRun
+    test_case: TestCase
+    actual_decision: Decision
+    actual_faq_id: String?
+    similarity: Decimal
+    evaluation: CaseEvaluation
+    created_at: Timestamp
+    evaluated_at: Timestamp?
+
+    meets_expectation: CaseExpectation.matches(
+        test_case: test_case
+        decision: actual_decision
+        faq_id: actual_faq_id
+        similarity: similarity
+    )
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    default_threshold: Decimal = 0.85
+    min_pass_rate: Decimal = 0.85
+}
+
+------------------------------------------------------------
+-- Defaults
+------------------------------------------------------------
+
+default TestDataset poc_core = {
+    id: "poc-core-support-v1",
+    name: "PoC semantic cache acceptance suite",
+    description: "Core support FAQ retrieval validation with hit and miss coverage",
+    status: active
+}
+
+default TestFAQ faq_auth_reset_password = {
+    dataset: poc_core,
+    faq_id: "faq-auth-reset-password",
+    question: "How do I reset my password?",
+    answer: "Use the Forgot password link on the sign-in page, then follow the email instructions."
+}
+
+default TestFAQ faq_billing_trial_length = {
+    dataset: poc_core,
+    faq_id: "faq-billing-trial-length",
+    question: "How long is the free trial?",
+    answer: "The free trial lasts 14 days from signup."
+}
+
+default TestFAQ faq_account_delete = {
+    dataset: poc_core,
+    faq_id: "faq-account-delete",
+    question: "How can I permanently delete my account?",
+    answer: "Go to Settings > Account > Delete account and confirm the action."
+}
+
+default TestFAQ faq_billing_download_invoice = {
+    dataset: poc_core,
+    faq_id: "faq-billing-download-invoice",
+    question: "How do I download an invoice?",
+    answer: "Open Billing > Invoices, then choose the invoice and click Download PDF."
+}
+
+default TestFAQ faq_account_change_email = {
+    dataset: poc_core,
+    faq_id: "faq-account-change-email",
+    question: "How do I change my account email address?",
+    answer: "Go to Profile > Email, enter the new address, and confirm via verification link."
+}
+
+default TestFAQ faq_api_rate_limit = {
+    dataset: poc_core,
+    faq_id: "faq-api-rate-limit",
+    question: "What is the API rate limit?",
+    answer: "The API allows 120 requests per minute per workspace token."
+}
+
+default TestFAQ faq_product_supported_browsers = {
+    dataset: poc_core,
+    faq_id: "faq-product-supported-browsers",
+    question: "Which browsers are supported?",
+    answer: "We support the latest two versions of Chrome, Firefox, Safari, and Edge."
+}
+
+default TestFAQ faq_security_data_residency = {
+    dataset: poc_core,
+    faq_id: "faq-security-data-residency",
+    question: "Do you support data residency in the EU?",
+    answer: "Yes, customers can choose EU data residency for production workspaces."
+}
+
+default TestCase case_001_password_reset = {
+    dataset: poc_core,
+    case_id: "case-001",
+    question: "I forgot my password, how can I sign in again?",
+    expected_decision: hit,
+    expected_faq_id: "faq-auth-reset-password",
+    min_similarity: 0.82,
+    notes: "Paraphrase of reset password intent"
+}
+
+default TestCase case_002_trial_duration = {
+    dataset: poc_core,
+    case_id: "case-002",
+    question: "How many days is your free trial?",
+    expected_decision: hit,
+    expected_faq_id: "faq-billing-trial-length",
+    min_similarity: 0.82,
+    notes: "Equivalent billing trial wording"
+}
+
+default TestCase case_003_delete_account = {
+    dataset: poc_core,
+    case_id: "case-003",
+    question: "Can I permanently remove my profile?",
+    expected_decision: hit,
+    expected_faq_id: "faq-account-delete",
+    min_similarity: 0.8,
+    notes: "Account deletion intent"
+}
+
+default TestCase case_004_invoice_pdf = {
+    dataset: poc_core,
+    case_id: "case-004",
+    question: "Where can I get last month's invoice PDF?",
+    expected_decision: hit,
+    expected_faq_id: "faq-billing-download-invoice",
+    min_similarity: 0.8,
+    notes: "Billing invoice retrieval"
+}
+
+default TestCase case_005_change_email = {
+    dataset: poc_core,
+    case_id: "case-005",
+    question: "How do I update the email on my account?",
+    expected_decision: hit,
+    expected_faq_id: "faq-account-change-email",
+    min_similarity: 0.8,
+    notes: "Profile/email change intent"
+}
+
+default TestCase case_006_api_throttle = {
+    dataset: poc_core,
+    case_id: "case-006",
+    question: "What API throttling limits do you enforce?",
+    expected_decision: hit,
+    expected_faq_id: "faq-api-rate-limit",
+    min_similarity: 0.8,
+    notes: "Rate limiting intent"
+}
+
+default TestCase case_007_supported_browsers = {
+    dataset: poc_core,
+    case_id: "case-007",
+    question: "Does your app work in Firefox and Safari?",
+    expected_decision: hit,
+    expected_faq_id: "faq-product-supported-browsers",
+    min_similarity: 0.8,
+    notes: "Supported browsers intent"
+}
+
+default TestCase case_008_data_residency_eu = {
+    dataset: poc_core,
+    case_id: "case-008",
+    question: "Can we keep customer data in EU region?",
+    expected_decision: hit,
+    expected_faq_id: "faq-security-data-residency",
+    min_similarity: 0.8,
+    notes: "Data residency intent"
+}
+
+default TestCase case_009_saml = {
+    dataset: poc_core,
+    case_id: "case-009",
+    question: "Do you support SAML single sign-on?",
+    expected_decision: miss,
+    expected_faq_id: null,
+    min_similarity: null,
+    notes: "Out of fixture scope; should miss"
+}
+
+default TestCase case_010_annual_discount = {
+    dataset: poc_core,
+    case_id: "case-010",
+    question: "Is there an annual billing discount?",
+    expected_decision: miss,
+    expected_faq_id: null,
+    min_similarity: null,
+    notes: "Not covered by fixture FAQs"
+}
+
+default TestCase case_011_salesforce = {
+    dataset: poc_core,
+    case_id: "case-011",
+    question: "How do I integrate this with Salesforce?",
+    expected_decision: miss,
+    expected_faq_id: null,
+    min_similarity: null,
+    notes: "Out-of-domain integration question"
+}
+
+default TestCase case_012_soc2 = {
+    dataset: poc_core,
+    case_id: "case-012",
+    question: "Where can I download your SOC 2 report?",
+    expected_decision: miss,
+    expected_faq_id: null,
+    min_similarity: null,
+    notes: "Security compliance query not in fixtures"
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule StartEvaluationRun {
+    when: StartSemanticCacheEvaluation(run_id, dataset, threshold?)
+    requires: dataset.status = active
+    let selected_threshold = threshold ?? config.default_threshold
+    ensures: TestRun.created(
+        run_id: run_id
+        dataset: dataset
+        threshold: selected_threshold
+        status: running
+        started_at: now
+        completed_at: null
+        total_cases: dataset.query_cases.count
+        passed_cases: 0
+        failed_cases: 0
+    )
+}
+
+rule ExecuteEvaluationCases {
+    when: run: TestRun.created
+    requires: run.status = running
+    for test_case in run.dataset.query_cases:
+        let probe =
+            SemanticCacheProbe.evaluate(
+                question: test_case.question
+                threshold: run.threshold
+                faq_entries: run.dataset.faq_entries
+            )
+        ensures: CaseResult.created(
+            run: run
+            test_case: test_case
+            actual_decision: probe.decision
+            actual_faq_id: probe.entry_id
+            similarity: probe.score
+            evaluation: pending
+            created_at: now
+            evaluated_at: null
+        )
+}
+
+rule MarkCasePassed {
+    when: result: CaseResult.created
+    requires: result.evaluation = pending and result.meets_expectation
+    ensures: result.evaluation = passed
+    ensures: result.evaluated_at = now
+    ensures: result.run.passed_cases = result.run.passed_cases + 1
+}
+
+rule MarkCaseFailed {
+    when: result: CaseResult.created
+    requires: result.evaluation = pending and not result.meets_expectation
+    ensures: result.evaluation = failed
+    ensures: result.evaluated_at = now
+    ensures: result.run.failed_cases = result.run.failed_cases + 1
+}
+
+rule CompleteEvaluationRun {
+    when: run: TestRun.all_cases_evaluated
+    requires: run.status = running
+    ensures: run.status = completed
+    ensures: run.completed_at = now
+    ensures:
+        SemanticCacheEvaluationCompleted(
+            run_id: run.run_id
+            dataset_id: run.dataset.id
+            total_cases: run.total_cases
+            passed_cases: run.passed_cases
+            failed_cases: run.failed_cases
+            pass_rate: RunMetrics.pass_rate(passed: run.passed_cases, total: run.total_cases)
+            required_pass_rate: config.min_pass_rate
+            meets_threshold: RunMetrics.meets_pass_rate(
+                passed: run.passed_cases
+                total: run.total_cases
+                required: config.min_pass_rate
+            )
+        )
+}
+
+------------------------------------------------------------
+-- Deferred Specifications
+------------------------------------------------------------
+
+deferred SemanticCacheProbe.evaluate      -- executes the real semantic cache retrieval path
+deferred CaseExpectation.matches          -- expected-vs-actual matching logic for a case
+deferred RunMetrics.pass_rate             -- ratio helper for reporting
+deferred RunMetrics.meets_pass_rate       -- pass-rate threshold check

@@ -1,0 +1,13 @@
+# Build artifacts
+/target/
+
+# Model files (large binaries, download via models/README.md)
+models/*.gguf
+models/*.json
+!models/README.md
+
+# Bench generated indexes
+bench/*.jsonl
+
+# OS files
+.DS_Store
