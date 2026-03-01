@@ -1,11 +1,10 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use faq_core::{
-    cluster_questions, decide, evaluate_cases, load_entries_jsonl, read_squad_parquet,
-    save_entries_jsonl, CandleEmbeddingProvider, CandleEvaluationRun, Decision, EmbeddingProvider,
-    EvalCase, FaqEntry, HashEmbeddingProvider, MiniLmEmbeddingProvider, OrchestrationStatus,
-    Qwen3EmbeddingProvider, RawEvalCase, DEFAULT_EMBEDDING_DIM, DEFAULT_REQUIRED_PASS_RATE,
-    DEFAULT_THRESHOLD,
+    decide, evaluate_cases, load_entries_jsonl, save_entries_jsonl, CandleEmbeddingProvider,
+    CandleEvaluationRun, Decision, EmbeddingProvider, EvalCase, FaqEntry, HashEmbeddingProvider,
+    MiniLmEmbeddingProvider, OrchestrationStatus, Qwen3EmbeddingProvider, DEFAULT_EMBEDDING_DIM,
+    DEFAULT_REQUIRED_PASS_RATE, DEFAULT_THRESHOLD,
 };
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
@@ -53,21 +52,6 @@ enum Commands {
         #[arg(long, default_value_t = DEFAULT_REQUIRED_PASS_RATE)]
         min_pass_rate: f32,
     },
-    /// Cluster questions from a SQuAD v2 parquet file to identify potential FAQs.
-    Cluster {
-        /// Path to a SQuAD v2 parquet file.
-        #[arg(long)]
-        input: PathBuf,
-        /// Cosine similarity threshold for grouping questions (0.0–1.0).
-        #[arg(long, default_value_t = 0.80)]
-        threshold: f32,
-        /// Only show clusters with at least this many members.
-        #[arg(long, default_value_t = 2)]
-        min_size: usize,
-        /// Maximum number of clusters to display.
-        #[arg(long, default_value_t = 50)]
-        top: usize,
-    },
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -95,10 +79,8 @@ fn read_raw_faq_jsonl(path: &Path) -> Result<Vec<RawFaq>> {
 
 fn read_eval_cases_json(path: &Path) -> Result<Vec<EvalCase>> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let raw: Vec<RawEvalCase> = serde_json::from_reader(file).context("parse eval cases json")?;
-    raw.into_iter()
-        .map(|r| r.into_eval_case())
-        .collect::<anyhow::Result<Vec<EvalCase>>>()
+    let cases: Vec<EvalCase> = serde_json::from_reader(file).context("parse eval cases json")?;
+    Ok(cases)
 }
 
 /// Detect the architecture of a safetensors file by reading its header JSON
@@ -155,15 +137,6 @@ fn make_embedder(cli: &Cli) -> Result<Box<dyn EmbeddingProvider>> {
         }
         (None, None) => Ok(Box::new(HashEmbeddingProvider::new(DEFAULT_EMBEDDING_DIM))),
         _ => anyhow::bail!("--model-path and --tokenizer-path must both be provided"),
-    }
-}
-
-fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        let end = s.floor_char_boundary(max);
-        &s[..end]
     }
 }
 
@@ -291,20 +264,14 @@ fn run() -> Result<()> {
             );
 
             for o in &summary.outcomes {
-                let answer_preview = o
-                    .actual_answer
-                    .as_deref()
-                    .map(|a| if a.len() > 80 { &a[..80] } else { a })
-                    .unwrap_or("null");
                 println!(
-                    "case={} passed={} decision={:?} faq_id={} score={:.4} latency={:.1}ms answer={}",
+                    "case={} passed={} decision={:?} faq_id={} score={:.4} latency={:.1}ms",
                     o.case_id,
                     o.passed,
                     o.actual_decision,
                     o.actual_faq_id.as_deref().unwrap_or("null"),
                     o.score,
-                    o.latency_ms,
-                    answer_preview
+                    o.latency_ms
                 );
             }
 
@@ -314,60 +281,6 @@ fn run() -> Result<()> {
                 "total_latency={:.1}ms avg_latency={:.1}ms",
                 total_ms, avg_ms
             );
-        }
-        Commands::Cluster {
-            input,
-            threshold,
-            min_size,
-            top,
-        } => {
-            eprintln!("Reading parquet file: {} ...", input.display());
-            let rows = read_squad_parquet(input)?;
-            eprintln!("Loaded {} questions.", rows.len());
-
-            let embedder = make_embedder(&cli)?;
-            eprintln!("Clustering with threshold={threshold} ...");
-            let clusters = cluster_questions(&rows, embedder.as_ref(), *threshold)?;
-
-            let filtered: Vec<_> = clusters
-                .iter()
-                .filter(|c| c.members.len() >= *min_size)
-                .take(*top)
-                .collect();
-
-            println!(
-                "total_questions={} total_clusters={} shown={} (min_size={})",
-                rows.len(),
-                clusters.len(),
-                filtered.len(),
-                min_size,
-            );
-            println!();
-
-            for (rank, cluster) in filtered.iter().enumerate() {
-                let rep = &rows[cluster.representative];
-                println!(
-                    "--- Cluster #{} ({} questions) ---",
-                    rank + 1,
-                    cluster.members.len()
-                );
-                println!("Representative: {}", rep.question);
-                println!("Title: {}", rep.title);
-                if let Some(ans) = rep.answer_texts.first() {
-                    println!("Answer: {}", ans);
-                }
-                println!("Context: {}", truncate(&rep.context, 200));
-                println!("Members:");
-                for (mi, &idx) in cluster.members.iter().enumerate() {
-                    if mi >= 10 {
-                        println!("  ... and {} more", cluster.members.len() - 10);
-                        break;
-                    }
-                    let r = &rows[idx];
-                    println!("  [{}] {}", r.id, r.question);
-                }
-                println!();
-            }
         }
     }
 
