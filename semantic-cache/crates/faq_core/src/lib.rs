@@ -1,4 +1,5 @@
 pub mod candle_embed;
+pub mod cluster;
 pub mod embed;
 pub mod eval;
 pub mod minilm_embed;
@@ -9,8 +10,9 @@ pub mod retrieval;
 pub mod storage;
 
 pub use candle_embed::CandleEmbeddingProvider;
+pub use cluster::{cluster_questions, read_squad_parquet, QuestionCluster, SquadRow};
 pub use embed::{EmbeddingProvider, HashEmbeddingProvider};
-pub use eval::{evaluate_cases, CaseExpectation, EvalCase, EvalOutcome, EvalSummary};
+pub use eval::{evaluate_cases, CaseExpectation, EvalCase, EvalOutcome, EvalSummary, RawEvalCase};
 pub use minilm_embed::MiniLmEmbeddingProvider;
 pub use model::{Decision, FaqEntry, RetrievalMatch};
 pub use orchestration::{
