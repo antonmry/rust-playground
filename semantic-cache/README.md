@@ -56,7 +56,7 @@ testing but not semantically meaningful).
 ./target/release/faq_cli \
   --model-path ./models/nomic-embed-text-v2-moe.Q4_K_M.gguf \
   --tokenizer-path ./models/tokenizer.json \
-  build-index --input data/faq_seed.jsonl --output bench/index_nomic.jsonl
+  build-index --input data/faq_seed.jsonl --output bench/index_nomic-embed-text-v2-moe.Q4_K_M.jsonl
 ```
 
 ### Query
@@ -65,7 +65,7 @@ testing but not semantically meaningful).
 ./target/release/faq_cli \
   --model-path ./models/nomic-embed-text-v2-moe.Q4_K_M.gguf \
   --tokenizer-path ./models/tokenizer.json \
-  query --index bench/index_nomic.jsonl \
+  query --index bench/index_nomic-embed-text-v2-moe.Q4_K_M.jsonl \
   --question "I forgot my password"
 ```
 
@@ -77,7 +77,7 @@ Use `--threshold` to adjust hit/miss sensitivity (default: 0.55).
 ./target/release/faq_cli \
   --model-path ./models/nomic-embed-text-v2-moe.Q4_K_M.gguf \
   --tokenizer-path ./models/tokenizer.json \
-  eval --index bench/index_nomic.jsonl --cases data/eval_cases.json
+  eval --index bench/index_nomic-embed-text-v2-moe.Q4_K_M.jsonl --cases data/eval_cases.json
 ```
 
 Output includes per-case pass/fail, similarity score, latency, and summary
@@ -89,12 +89,12 @@ statistics.
 ./target/release/faq_cli \
   --model-path ./models/pplx-embed-v1-0.6b.safetensors \
   --tokenizer-path ./models/pplx-embed-v1-0.6b-tokenizer.json \
-  build-index --input data/faq_seed.jsonl --output bench/index_pplx.jsonl
+  build-index --input data/faq_seed.jsonl --output bench/index_pplx-embed-v1-0.6b.jsonl
 
 ./target/release/faq_cli \
   --model-path ./models/pplx-embed-v1-0.6b.safetensors \
   --tokenizer-path ./models/pplx-embed-v1-0.6b-tokenizer.json \
-  query --index bench/index_pplx.jsonl --question "I forgot my password"
+  query --index bench/index_pplx-embed-v1-0.6b.jsonl --question "I forgot my password"
 ```
 
 ### With all-MiniLM-L6-v2 (safetensors backend)
@@ -103,12 +103,12 @@ statistics.
 ./target/release/faq_cli \
   --model-path ./models/all-MiniLM-L6-v2.safetensors \
   --tokenizer-path ./models/all-MiniLM-L6-v2-tokenizer.json \
-  build-index --input data/faq_seed.jsonl --output bench/index_minilm.jsonl
+  build-index --input data/faq_seed.jsonl --output bench/index_all-MiniLM-L6-v2.jsonl
 
 ./target/release/faq_cli \
   --model-path ./models/all-MiniLM-L6-v2.safetensors \
   --tokenizer-path ./models/all-MiniLM-L6-v2-tokenizer.json \
-  query --index bench/index_minilm.jsonl --question "I forgot my password"
+  query --index bench/index_all-MiniLM-L6-v2.jsonl --question "I forgot my password"
 ```
 
 ### Without the model (hash backend)
@@ -171,8 +171,8 @@ huggingface-cli download bitext/Bitext-customer-support-llm-chatbot-training-dat
   cluster --input data/bitext-support/Bitext_Sample_Customer_Support_Training_Dataset_27K_responses-v11.csv \
   --threshold 0.95 --max-points 1000 \
   --projection tsne \
-  --json-out clusters.json \
-  --plot-out clusters.html
+  --json-out site/clusters.json \
+  --plot-out site/clusters.html
 ```
 
 Open `clusters.html` in a browser to see an interactive scatter plot of
