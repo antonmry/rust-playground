@@ -16,5 +16,3 @@ bench/*.jsonl
 .breo/
 data/squad_v2/
 data/bitext-support/
-clusters.html
-clusters.json
