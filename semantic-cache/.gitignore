@@ -12,7 +12,3 @@ bench/*.jsonl
 
 # OS files
 .DS_Store
-
-.breo/
-.data/
-/data/
