@@ -12,8 +12,8 @@ pub mod storage;
 pub use candle_embed::CandleEmbeddingProvider;
 pub use cluster::{
     build_visualization, cluster_embeddings, cluster_questions, downsample_indices, project_pca_2d,
-    read_squad_parquet, render_html_scatter, ClusterMeta, ClusterSummary, ClusterVisualization,
-    ProjectedPoint, QuestionCluster, SquadRow,
+    project_tsne_2d, read_bitext_csv, read_cluster_input, read_squad_parquet, render_html_scatter,
+    ClusterMeta, ClusterSummary, ClusterVisualization, ProjectedPoint, QuestionCluster, SquadRow,
 };
 pub use embed::{EmbeddingProvider, HashEmbeddingProvider};
 pub use eval::{evaluate_cases, CaseExpectation, EvalCase, EvalOutcome, EvalSummary};

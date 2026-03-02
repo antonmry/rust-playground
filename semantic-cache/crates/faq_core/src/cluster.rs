@@ -148,6 +148,55 @@ pub fn read_squad_parquet(path: &Path) -> Result<Vec<SquadRow>> {
 }
 
 // ---------------------------------------------------------------------------
+// CSV reader (Bitext customer support schema and generic CSV)
+// ---------------------------------------------------------------------------
+
+/// A raw row from a Bitext-style CSV file.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct BitextCsvRow {
+    #[serde(default)]
+    flags: String,
+    instruction: String,
+    category: String,
+    intent: String,
+    response: String,
+}
+
+/// Read a Bitext customer support CSV file and convert to `SquadRow`.
+pub fn read_bitext_csv(path: &Path) -> Result<Vec<SquadRow>> {
+    let mut reader =
+        csv::Reader::from_path(path).with_context(|| format!("open CSV: {}", path.display()))?;
+
+    let mut rows = Vec::new();
+    for (i, result) in reader.deserialize().enumerate() {
+        let record: BitextCsvRow = result.with_context(|| format!("parse CSV row {}", i))?;
+        rows.push(SquadRow {
+            id: format!("csv-{}", i),
+            title: record.intent,
+            context: record.category,
+            question: record.instruction,
+            answer_texts: vec![record.response],
+        });
+    }
+
+    Ok(rows)
+}
+
+/// Auto-detect file format by extension and read rows.
+///
+/// Supports `.parquet` (SQuAD v2 schema) and `.csv` (Bitext schema).
+pub fn read_cluster_input(path: &Path) -> Result<Vec<SquadRow>> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    match ext {
+        "parquet" => read_squad_parquet(path),
+        "csv" => read_bitext_csv(path),
+        other => anyhow::bail!("unsupported input format '.{other}' (expected .parquet or .csv)"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Clustering
 // ---------------------------------------------------------------------------
 
@@ -281,6 +330,48 @@ pub fn project_pca_2d(embeddings: &[Vec<f32>]) -> Result<Vec<(f32, f32)>> {
     Ok(points)
 }
 
+/// Project high-dimensional embeddings to 2D using Barnes-Hut t-SNE.
+///
+/// Returns N `(x, y)` pairs corresponding to each input embedding.
+/// `perplexity` controls the balance between local and global structure
+/// (typical range: 5–50, must be < n_samples).
+pub fn project_tsne_2d(embeddings: &[Vec<f32>], perplexity: f32) -> Result<Vec<(f32, f32)>> {
+    if embeddings.is_empty() {
+        return Ok(Vec::new());
+    }
+    if embeddings.len() == 1 {
+        return Ok(vec![(0.0, 0.0)]);
+    }
+
+    let n = embeddings.len();
+    // perplexity must be < n / 3 for Barnes-Hut to work well
+    let effective_perplexity = perplexity.min((n as f32 - 1.0) / 3.0).max(1.0);
+
+    let samples: Vec<&[f32]> = embeddings.iter().map(|e| e.as_slice()).collect();
+
+    let mut tsne = bhtsne::tSNE::new(&samples);
+    tsne.embedding_dim(2)
+        .perplexity(effective_perplexity)
+        .epochs(1000)
+        .barnes_hut(0.5, |a: &&[f32], b: &&[f32]| {
+            a.iter()
+                .zip(b.iter())
+                .map(|(x, y)| (x - y).powi(2))
+                .sum::<f32>()
+                .sqrt()
+        });
+
+    let embedding = tsne.embedding();
+    let mut points = Vec::with_capacity(n);
+    for i in 0..n {
+        let x = embedding[i * 2];
+        let y = embedding[i * 2 + 1];
+        points.push((x, y));
+    }
+
+    Ok(points)
+}
+
 // ---------------------------------------------------------------------------
 // Downsampling
 // ---------------------------------------------------------------------------
@@ -301,12 +392,15 @@ pub fn downsample_indices(total: usize, max_points: usize) -> Vec<usize> {
 // ---------------------------------------------------------------------------
 
 /// Build the full visualization data structure.
+///
+/// `projection` can be `"pca"` or `"tsne"`.
 pub fn build_visualization(
     rows: &[SquadRow],
     clusters: &[QuestionCluster],
     embeddings: &[Vec<f32>],
     input_path: &str,
     threshold: f32,
+    projection: &str,
 ) -> Result<ClusterVisualization> {
     // Map row index → cluster index
     let mut row_to_cluster: Vec<Option<usize>> = vec![None; rows.len()];
@@ -318,7 +412,13 @@ pub fn build_visualization(
         }
     }
 
-    let coords = project_pca_2d(embeddings)?;
+    let coords = match projection {
+        "tsne" => {
+            eprintln!("Running t-SNE (this may take a moment) ...");
+            project_tsne_2d(embeddings, 30.0)?
+        }
+        _ => project_pca_2d(embeddings)?,
+    };
 
     let cluster_summaries: Vec<ClusterSummary> = clusters
         .iter()
@@ -366,7 +466,7 @@ pub fn build_visualization(
     let meta = ClusterMeta {
         input_path: input_path.to_string(),
         threshold,
-        projection_method: "pca".to_string(),
+        projection_method: projection.to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         point_count: points.len(),
     };

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use faq_core::{
     build_visualization, cluster_embeddings, decide, downsample_indices, evaluate_cases,
-    load_entries_jsonl, read_squad_parquet, render_html_scatter, save_entries_jsonl,
+    load_entries_jsonl, read_cluster_input, render_html_scatter, save_entries_jsonl,
     CandleEmbeddingProvider, CandleEvaluationRun, Decision, EmbeddingProvider, EvalCase, FaqEntry,
     HashEmbeddingProvider, MiniLmEmbeddingProvider, OrchestrationStatus, Qwen3EmbeddingProvider,
     DEFAULT_EMBEDDING_DIM, DEFAULT_REQUIRED_PASS_RATE, DEFAULT_THRESHOLD,
@@ -55,7 +55,7 @@ enum Commands {
     },
     /// Cluster questions from a SQuAD v2 parquet file to identify potential FAQs.
     Cluster {
-        /// Path to a SQuAD v2 parquet file.
+        /// Path to input file (.parquet for SQuAD v2, .csv for Bitext/generic).
         #[arg(long)]
         input: PathBuf,
         /// Cosine similarity threshold for grouping questions (0.0-1.0).
@@ -329,14 +329,14 @@ fn run() -> Result<()> {
             projection,
             max_points,
         } => {
-            if projection != "pca" {
+            if projection != "pca" && projection != "tsne" {
                 anyhow::bail!(
-                    "unsupported projection method: {projection} (only 'pca' is supported)"
+                    "unsupported projection method: {projection} (expected 'pca' or 'tsne')"
                 );
             }
 
-            eprintln!("Reading parquet file: {} ...", input.display());
-            let mut rows = read_squad_parquet(input)?;
+            eprintln!("Reading input file: {} ...", input.display());
+            let mut rows = read_cluster_input(input)?;
             eprintln!("Loaded {} questions.", rows.len());
 
             if let Some(cap) = max_points {
@@ -404,13 +404,14 @@ fn run() -> Result<()> {
 
             // Visualization output (optional)
             if json_out.is_some() || plot_out.is_some() {
-                eprintln!("Projecting to 2D with PCA ...");
+                eprintln!("Projecting to 2D with {projection} ...");
                 let viz = build_visualization(
                     &rows,
                     &clusters,
                     &embeddings,
                     &input.display().to_string(),
                     *threshold,
+                    projection,
                 )?;
 
                 if let Some(json_path) = json_out {
