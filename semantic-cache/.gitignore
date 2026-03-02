@@ -14,5 +14,4 @@ bench/*.jsonl
 .DS_Store
 
 .breo/
-.data/
-/data/
+data/squad_v2/

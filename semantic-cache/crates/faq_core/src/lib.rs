@@ -10,9 +10,13 @@ pub mod retrieval;
 pub mod storage;
 
 pub use candle_embed::CandleEmbeddingProvider;
-pub use cluster::{cluster_questions, read_squad_parquet, QuestionCluster, SquadRow};
+pub use cluster::{
+    build_visualization, cluster_embeddings, cluster_questions, downsample_indices, project_pca_2d,
+    read_squad_parquet, render_html_scatter, ClusterMeta, ClusterSummary, ClusterVisualization,
+    ProjectedPoint, QuestionCluster, SquadRow,
+};
 pub use embed::{EmbeddingProvider, HashEmbeddingProvider};
-pub use eval::{evaluate_cases, CaseExpectation, EvalCase, EvalOutcome, EvalSummary, RawEvalCase};
+pub use eval::{evaluate_cases, CaseExpectation, EvalCase, EvalOutcome, EvalSummary};
 pub use minilm_embed::MiniLmEmbeddingProvider;
 pub use model::{Decision, FaqEntry, RetrievalMatch};
 pub use orchestration::{

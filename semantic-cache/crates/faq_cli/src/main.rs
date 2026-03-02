@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use faq_core::{
-    cluster_questions, decide, evaluate_cases, load_entries_jsonl, read_squad_parquet,
-    save_entries_jsonl, CandleEmbeddingProvider, CandleEvaluationRun, Decision, EmbeddingProvider,
-    EvalCase, FaqEntry, HashEmbeddingProvider, MiniLmEmbeddingProvider, OrchestrationStatus,
-    Qwen3EmbeddingProvider, RawEvalCase, DEFAULT_EMBEDDING_DIM, DEFAULT_REQUIRED_PASS_RATE,
-    DEFAULT_THRESHOLD,
+    build_visualization, cluster_embeddings, decide, downsample_indices, evaluate_cases,
+    load_entries_jsonl, read_squad_parquet, render_html_scatter, save_entries_jsonl,
+    CandleEmbeddingProvider, CandleEvaluationRun, Decision, EmbeddingProvider, EvalCase, FaqEntry,
+    HashEmbeddingProvider, MiniLmEmbeddingProvider, OrchestrationStatus, Qwen3EmbeddingProvider,
+    DEFAULT_EMBEDDING_DIM, DEFAULT_REQUIRED_PASS_RATE, DEFAULT_THRESHOLD,
 };
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
@@ -58,7 +58,7 @@ enum Commands {
         /// Path to a SQuAD v2 parquet file.
         #[arg(long)]
         input: PathBuf,
-        /// Cosine similarity threshold for grouping questions (0.0–1.0).
+        /// Cosine similarity threshold for grouping questions (0.0-1.0).
         #[arg(long, default_value_t = 0.80)]
         threshold: f32,
         /// Only show clusters with at least this many members.
@@ -67,6 +67,18 @@ enum Commands {
         /// Maximum number of clusters to display.
         #[arg(long, default_value_t = 50)]
         top: usize,
+        /// Write structured JSON output to this path.
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+        /// Write standalone HTML scatter plot to this path.
+        #[arg(long)]
+        plot_out: Option<PathBuf>,
+        /// 2D projection method (only "pca" supported currently).
+        #[arg(long, default_value = "pca")]
+        projection: String,
+        /// Maximum number of points to include (downsampling).
+        #[arg(long)]
+        max_points: Option<usize>,
     },
 }
 
@@ -95,10 +107,8 @@ fn read_raw_faq_jsonl(path: &Path) -> Result<Vec<RawFaq>> {
 
 fn read_eval_cases_json(path: &Path) -> Result<Vec<EvalCase>> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let raw: Vec<RawEvalCase> = serde_json::from_reader(file).context("parse eval cases json")?;
-    raw.into_iter()
-        .map(|r| r.into_eval_case())
-        .collect::<anyhow::Result<Vec<EvalCase>>>()
+    let cases: Vec<EvalCase> = serde_json::from_reader(file).context("parse eval cases json")?;
+    Ok(cases)
 }
 
 /// Detect the architecture of a safetensors file by reading its header JSON
@@ -291,20 +301,14 @@ fn run() -> Result<()> {
             );
 
             for o in &summary.outcomes {
-                let answer_preview = o
-                    .actual_answer
-                    .as_deref()
-                    .map(|a| if a.len() > 80 { &a[..80] } else { a })
-                    .unwrap_or("null");
                 println!(
-                    "case={} passed={} decision={:?} faq_id={} score={:.4} latency={:.1}ms answer={}",
+                    "case={} passed={} decision={:?} faq_id={} score={:.4} latency={:.1}ms",
                     o.case_id,
                     o.passed,
                     o.actual_decision,
                     o.actual_faq_id.as_deref().unwrap_or("null"),
                     o.score,
-                    o.latency_ms,
-                    answer_preview
+                    o.latency_ms
                 );
             }
 
@@ -320,15 +324,44 @@ fn run() -> Result<()> {
             threshold,
             min_size,
             top,
+            json_out,
+            plot_out,
+            projection,
+            max_points,
         } => {
+            if projection != "pca" {
+                anyhow::bail!(
+                    "unsupported projection method: {projection} (only 'pca' is supported)"
+                );
+            }
+
             eprintln!("Reading parquet file: {} ...", input.display());
-            let rows = read_squad_parquet(input)?;
+            let mut rows = read_squad_parquet(input)?;
             eprintln!("Loaded {} questions.", rows.len());
 
-            let embedder = make_embedder(&cli)?;
-            eprintln!("Clustering with threshold={threshold} ...");
-            let clusters = cluster_questions(&rows, embedder.as_ref(), *threshold)?;
+            if let Some(cap) = max_points {
+                if rows.len() > *cap {
+                    eprintln!("Downsampling from {} to {} points.", rows.len(), cap);
+                    let keep = downsample_indices(rows.len(), *cap);
+                    rows = keep.into_iter().map(|i| rows[i].clone()).collect();
+                }
+            }
 
+            let embedder = make_embedder(&cli)?;
+
+            eprintln!("Computing embeddings ...");
+            let mut embeddings = Vec::with_capacity(rows.len());
+            for (i, row) in rows.iter().enumerate() {
+                if (i + 1) % 500 == 0 || i + 1 == rows.len() {
+                    eprintln!("  embedding {}/{} ...", i + 1, rows.len());
+                }
+                embeddings.push(embedder.embed(&row.question)?);
+            }
+
+            eprintln!("Clustering with threshold={threshold} ...");
+            let clusters = cluster_embeddings(&embeddings, *threshold);
+
+            // Text output (always)
             let filtered: Vec<_> = clusters
                 .iter()
                 .filter(|c| c.members.len() >= *min_size)
@@ -367,6 +400,33 @@ fn run() -> Result<()> {
                     println!("  [{}] {}", r.id, r.question);
                 }
                 println!();
+            }
+
+            // Visualization output (optional)
+            if json_out.is_some() || plot_out.is_some() {
+                eprintln!("Projecting to 2D with PCA ...");
+                let viz = build_visualization(
+                    &rows,
+                    &clusters,
+                    &embeddings,
+                    &input.display().to_string(),
+                    *threshold,
+                )?;
+
+                if let Some(json_path) = json_out {
+                    let json = serde_json::to_string_pretty(&viz)
+                        .context("serialize visualization JSON")?;
+                    std::fs::write(json_path, &json)
+                        .with_context(|| format!("write JSON to {}", json_path.display()))?;
+                    eprintln!("JSON written to {}", json_path.display());
+                }
+
+                if let Some(html_path) = plot_out {
+                    let html = render_html_scatter(&viz)?;
+                    std::fs::write(html_path, &html)
+                        .with_context(|| format!("write HTML to {}", html_path.display()))?;
+                    eprintln!("HTML plot written to {}", html_path.display());
+                }
             }
         }
     }
